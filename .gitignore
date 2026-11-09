@@ -19,3 +19,6 @@ __pycache__/
 
 # Claude per-workspace state + session outputs.
 /.claude/
+
+# Local credentials — never committed.
+/credentials/
