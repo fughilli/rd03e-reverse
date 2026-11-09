@@ -1,0 +1,18 @@
+/bazel-*
+/out/
+__pycache__/
+*.pyc
+.direnv/
+
+# Vendor firmware images (Ai-Thinker Rd-03E .hex) — proprietary, never committed.
+/targets/rd03e/
+
+# SWD flash dumps, and any coordinated-disclosure / vuln material — never committed.
+/dumps/
+/docs/audit/
+/docs/disclosure/
+
+# In-tree Bazel caches (see .bazelrc) — large, machine-local, never committed.
+/.bazelisk/
+/.bazel-disk-cache/
+/.bazel-repo-cache/

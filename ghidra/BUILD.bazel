@@ -1,0 +1,30 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# One-shot RE pass over a whole GD32E230 firmware IMAGE (Intel HEX or raw bin):
+#   import (ARM:LE:32:Cortex) -> lay down the GD32 memory map + reset vector
+#   (SetupMemoryMap.py) -> auto-analyze -> export MMIO accesses (ExportMmio.py)
+#   + decompile matching functions (DecompileFuncs.py).
+#
+#   bazel run //ghidra:analyze_fw -- targets/rd03e/2268_XenP102RM01.hex out/fw2268
+#
+# The archive-oriented analyze_lib in rules_reverse_engineering does not fit:
+# the vendor downloads and SWD dumps are single images at a fixed base, not .a
+# libraries. The generic post-scripts (ExportMmio / DecompileFuncs) are reused
+# from rules_reverse_engineering via runfiles; the Cortex-M pre-script is local.
+sh_binary(
+    name = "analyze_fw",
+    srcs = ["analyze_fw.sh"],
+    data = [
+        "//:flake.nix",
+        ":scripts",
+        "@rules_reverse_engineering//ghidra:scripts",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+)
+
+filegroup(
+    name = "scripts",
+    srcs = glob(["scripts/*.py"]),
+)

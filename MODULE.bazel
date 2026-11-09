@@ -1,0 +1,25 @@
+"""rd03e-reverse — Ai-Thinker Rd-03E firmware RE harness (bzlmod).
+
+The generic Ghidra harness + objdump scanners live in rules_reverse_engineering;
+this module adds only the Rd-03E / GD32E230 specifics: the ARM Cortex-M
+toolchain in //flake.nix, the vendor firmware images fetched by //targets, and a
+whole-image analyze target in //ghidra (the generic analyze_lib is archive-only;
+these firmware downloads are single images at a fixed base). Drive it with:
+
+    bazel run //ghidra:analyze_fw -- targets/rd03e/2268_XenP102RM01.hex out/fw2268
+"""
+
+module(
+    name = "rd03e_reverse",
+    version = "0.0.0",
+    compatibility_level = 1,
+)
+
+bazel_dep(name = "rules_reverse_engineering", version = "0.1.0")
+git_override(
+    module_name = "rules_reverse_engineering",
+    remote = "https://github.com/fughilli/rules_reverse_engineering.git",
+    commit = "4731a19580a665c5400af824aec7102eb995b3e1",
+)
+
+bazel_dep(name = "rules_shell", version = "0.6.1")
