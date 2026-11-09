@@ -29,11 +29,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1787413388,
-        "narHash": "sha256-g/onTvxfJyoyH1mtohposYCbbJVR4UiqIWpybqY3x7I=",
+        "lastModified": 1794258041,
+        "narHash": "sha256-ncKeWd+XQKqCjMevmPIuhgDjWw0BY854K4gJTgmPrA0=",
         "owner": "fughilli",
         "repo": "rules_reverse_engineering",
-        "rev": "4731a19580a665c5400af824aec7102eb995b3e1",
+        "rev": "cf8b10d68fcfdd5ff2c087774b8c5bb71d112316",
         "type": "github"
       },
       "original": {

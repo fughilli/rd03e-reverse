@@ -19,7 +19,7 @@ bazel_dep(name = "rules_reverse_engineering", version = "0.1.0")
 git_override(
     module_name = "rules_reverse_engineering",
     remote = "https://github.com/fughilli/rules_reverse_engineering.git",
-    commit = "4731a19580a665c5400af824aec7102eb995b3e1",
+    commit = "cf8b10d68fcfdd5ff2c087774b8c5bb71d112316",
 )
 
 bazel_dep(name = "rules_shell", version = "0.6.1")
