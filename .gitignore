@@ -22,3 +22,6 @@ __pycache__/
 
 # Local credentials — never committed.
 /credentials/
+
+# Rust firmware build artifacts.
+/firmware/target/

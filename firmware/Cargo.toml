@@ -1,0 +1,23 @@
+[package]
+name = "rd03e-fw"
+version = "0.0.0"
+edition = "2021"
+description = "From-source GD32E230 firmware for the Rd-03E, reverse-engineered to drive the S3KM111L radar and host custom radar algorithms"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "rd03e-fw"
+test = false
+bench = false
+
+[dependencies]
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.5"
+panic-halt = "0.2.0"
+
+[profile.release]
+opt-level = "s"     # 64 KB flash; favor size
+lto = true
+codegen-units = 1
+debug = true        # symbols stay in the ELF, stripped from the .bin
+overflow-checks = false

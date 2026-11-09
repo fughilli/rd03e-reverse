@@ -23,20 +23,28 @@ and full analysis plan are in [`09-handoff.md`](09-handoff.md).
   (`ghidra/scripts/SetupMemoryMap.py`), auto-analyzes, and writes
   `out/<build>/mmio_accesses.csv` + `out/<build>/decomp/`.
 
-## Not yet established (needs evidence before it goes in the register map)
+## Established (build 2268) — see 01/02
 
-- [ ] **Inter-chip bus:** which of SPI0/SPI1/I2C0/I2C1 drives the S3KM111L, on
-      which GPIO pins, plus any CE/reset/IRQ lines. Trace from `Reset_Handler`
-      through RCU clock-enable + GPIO AF config.
-- [ ] **S3KM111L init sequence:** every register address/value written at boot,
-      in order — this is effectively the chip's undocumented register map.
-- [ ] **Data path:** polled / DMA / EXTI-on-ready; buffer sizes and formats.
+- [x] **Inter-chip bus:** **I2C0 @1 MHz on PB6/PB7** = S3KM111L control (dev
+      **0x40**, +0x44 for a 2nd SoC); **SPI0 on PA4/5/7 + DMA ch0** = bulk data
+      path. The GD32 ADC is unused. Details + function addrs: [`02-bus.md`](02-bus.md).
+- [x] **Register access model:** I2C, 8-bit reg addr, **16-bit big-endian**
+      value; write=`FUN_08004814`, read=`FUN_080047d8`; table-driven init
+      (`FUN_08004cb8` boot, `FUN_08001300` per-mode). [`01-s3km111l.md`](01-s3km111l.md).
+
+## Not yet established
+
+- [ ] **Concrete S3KM111L register defaults:** addresses/values are assembled in
+      SRAM at boot from flash; extract the flash source (entry layout + dev addr
+      are known). Next big step.
+- [ ] **SPI0/DMA direction + format:** CH0CTL DIR bit, SPI0 CTL0 config word.
+- [ ] **Data-ready mechanism:** no EXTI hits — polled or DMA-complete driven?
 - [ ] **Signal chain location:** how much (range FFT, CFAR, tracking, gesture
       classifier) runs on the GD32 vs. arrives pre-processed from the S3KM111L.
-- [ ] **UART protocol (J2):** frame headers/tails, command IDs, report formats,
-      baud — start at the USART IRQ handler.
-- [ ] **2268 vs 2269 diff:** shared functions = radar plumbing; differing =
-      ranging vs gesture app logic (BinDiff / Ghidra Version Tracking).
+- [ ] **UART protocol (J2):** USART1 frame headers/tails, command IDs, reports,
+      baud (`FUN_080087e4`).
+- [ ] **2268 vs 2269 diff:** shared = radar plumbing; differing = ranging vs
+      gesture app logic.
 
 ## Faithfulness policy
 

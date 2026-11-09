@@ -1,0 +1,9 @@
+[build]
+target = "thumbv8m.base-none-eabi"      # Cortex-M23 (ARMv8-M Baseline)
+
+[target.thumbv8m.base-none-eabi]
+rustflags = ["-C", "link-arg=-Tlink.x"]  # cortex-m-rt linker script
+
+# Flash/run with probe-rs over SWD (J3: 3V3/CLK/DIO/GND). Requires:
+#   cargo install probe-rs-tools   (and a J-Link / CMSIS-DAP probe)
+# runner = "probe-rs run --chip GD32E230K8"
