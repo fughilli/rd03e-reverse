@@ -19,6 +19,7 @@ mod datapath;
 mod gpio;
 mod i2c;
 mod pac;
+mod protocol;
 mod rcu;
 mod s3km111l;
 mod usart;
@@ -44,14 +45,23 @@ fn main() -> ! {
     let buf: &mut [u16] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_BUF) };
     datapath::init_rx(buf);
 
-    usart::write(b"rd03e-fw: bring-up complete\r\n");
-
+    // Main poll/report loop — the vendor's `do { collect; report } while(true)`
+    // (FUN_08007e4c). The S3KM111L runs the radar DSP internally; the host polls
+    // its result registers over I2C and emits Ai-Thinker report frames on USART1.
     loop {
-        // TODO: your radar algorithm.
-        // - consume frames from FRAME_BUF (DMA CH0CNT marks progress),
-        // - run range-FFT / CFAR / tracking,
-        // - report over usart::write(...), or reconfigure via
-        //   s3km111l::write_reg(DEV0, reg, val).
-        cortex_m::asm::wfi();
+        let status = s3km111l::result::status();
+        let r04 = s3km111l::result::reg04();
+        let r05 = s3km111l::result::reg05();
+
+        // Report payload. TODO: lay this out per the documented Rd-03E ranging
+        // report (target distance/energy); the register reads above are the
+        // confirmed source. This is also the hook for a custom algorithm —
+        // post-process here, or reconfigure the SoC via s3km111l::write_reg().
+        let payload = [
+            status as u8, (status >> 8) as u8,
+            r04 as u8, (r04 >> 8) as u8,
+            r05 as u8, (r05 >> 8) as u8,
+        ];
+        protocol::send_report(&payload);
     }
 }

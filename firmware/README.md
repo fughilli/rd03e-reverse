@@ -9,15 +9,18 @@ bring-up recovered in [`../docs/re/`](../docs/re/).
 
 | Layer | State |
 | --- | --- |
-| Clocks / peripheral enables (`rcu`) | RE-faithful; PLL→72 MHz SYSCLK is TODO |
+| Clocks / peripheral enables (`rcu`) | RE-faithful; PLL→72 MHz SYSCLK word is TODO |
 | Pin mux (`gpio`) — I2C0 PB6/7, SPI0 PA4/5/7 | RE-confirmed pins |
-| I2C0 master, S3KM111L control (`i2c`, `s3km111l`) | transaction flow ported from vendor `FUN_08004410`; **register tables TODO** |
+| I2C0 master, S3KM111L control (`i2c`, `s3km111l`) | transaction flow ported from vendor `FUN_08004410`; **80-register boot table extracted & baked in** |
+| Host poll/report loop (`main`) | mirrors vendor `FUN_08007e4c`: poll result regs → report |
+| UART protocol (`protocol`) | Ai-Thinker framing, delimiters confirmed in vendor `.data` |
 | SPI0 + DMA data path (`datapath`) | wired to `SPI0_DATA`; direction/format TODO |
-| USART1 host UART (`usart`) | skeleton; baud divisor TODO |
-| Radar signal processing | not started — this is where you come in |
+| USART1 host UART (`usart`) | functional; exact baud divisor TODO |
+| Radar signal processing | **runs on the S3KM111L SoC**, not the GD32 — reconfigure it via the register map |
 
-The two biggest unknowns (the concrete S3KM111L register values, and the SPI0
-frame format) are tracked in `../docs/re/01-s3km111l.md` and `02-bus.md`.
+The firmware is a functionally-complete thin host. Remaining work is
+*interpretation* (result-register field semantics, chirp-param meanings, SPI0
+frame format), not structural RE — see `../docs/re/03-architecture.md`.
 
 ## Build
 

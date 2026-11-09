@@ -90,13 +90,21 @@ The biggest unknown is how much of the radar processing lives on the GD32 versus
 
 **Deliverables**
 
-- [ ] Ghidra project(s) for 2268 and 2269 with SVD labels, FID-named SPL functions, and annotated key functions
-- [ ] S3KM111L register map: every address/value written at init, in order, with inferred field meanings and confidence
-- [ ] Inter-chip bus summary: peripheral, pins, mode, clock, control GPIOs, data-ready mechanism
-- [ ] Signal chain summary: what runs on the GD32 (FFT, CFAR, tracking, gesture classifier) with function addresses
-- [ ] UART protocol spec: frame format, commands, reports
-- [ ] Diff report 2268 vs 2269
-- [ ] Short feasibility note: what custom GD32 firmware would need to reimplement
+- [x] Headless Ghidra analysis of 2268/2269 (`bazel run //ghidra:analyze_fw`);
+      MMIO + decomp in `out/`. (SVD/FID labelling not needed — the constant
+      resolver `tools/hexconst.py` covered readability.)
+- [x] **S3KM111L register map:** every init write recovered — `regmap/boot-2268.csv`,
+      [`01-s3km111l.md`](01-s3km111l.md). Field meanings partly inferred (control
+      reg, channel gains, STC curve); full naming is the remaining interpretation.
+- [x] **Inter-chip bus summary:** I2C0 @1 MHz PB6/7 (dev 0x40/0x44) control,
+      SPI0 PA4/5/7 + DMA data; [`02-bus.md`](02-bus.md).
+- [x] **Signal chain:** runs on the **S3KM111L SoC**, not the GD32 (thin host) —
+      [`03-architecture.md`](03-architecture.md).
+- [x] **UART protocol:** Ai-Thinker framing, [`03-architecture.md`](03-architecture.md).
+- [x] **Diff 2268 vs 2269:** [`01-s3km111l.md`](01-s3km111l.md).
+- [x] **From-source firmware:** `firmware/` — a compiling GD32E230 Rust firmware
+      that brings up the buses, replays the real radar register table, and runs
+      the poll/report loop. (Exceeds the "feasibility note" ask.)
 
 ## References
 

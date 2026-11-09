@@ -32,19 +32,25 @@ and full analysis plan are in [`09-handoff.md`](09-handoff.md).
       value; write=`FUN_08004814`, read=`FUN_080047d8`; table-driven init
       (`FUN_08004cb8` boot, `FUN_08001300` per-mode). [`01-s3km111l.md`](01-s3km111l.md).
 
-## Not yet established
+- [x] **Concrete S3KM111L register defaults:** extracted — 80 `{reg,val}` writes
+      (`regmap/boot-2268.csv`, baked into `firmware/src/s3km111l.rs`). The flash
+      `.data` was armlink-compressed; `tools/unpack_data.py` unpacks it.
+- [x] **Signal chain location:** radar DSP runs **on the S3KM111L SoC**; the GD32
+      is a thin host (poll result regs + UART report). [`03-architecture.md`](03-architecture.md).
+- [x] **UART protocol:** Ai-Thinker framing (`FD FC FB FA`/`04 03 02 01` config,
+      `F4 F3 F2 F1`/`F8 F7 F6 F5` report); delimiters confirmed in `.data`.
+- [x] **2268 vs 2269 diff:** done — core bring-up vs the mode-specific chirp
+      registers (`01-s3km111l.md`).
 
-- [ ] **Concrete S3KM111L register defaults:** addresses/values are assembled in
-      SRAM at boot from flash; extract the flash source (entry layout + dev addr
-      are known). Next big step.
-- [ ] **SPI0/DMA direction + format:** CH0CTL DIR bit, SPI0 CTL0 config word.
-- [ ] **Data-ready mechanism:** no EXTI hits — polled or DMA-complete driven?
-- [ ] **Signal chain location:** how much (range FFT, CFAR, tracking, gesture
-      classifier) runs on the GD32 vs. arrives pre-processed from the S3KM111L.
-- [ ] **UART protocol (J2):** USART1 frame headers/tails, command IDs, reports,
-      baud (`FUN_080087e4`).
-- [ ] **2268 vs 2269 diff:** shared = radar plumbing; differing = ranging vs
-      gesture app logic.
+## Remaining — interpretation, not structural RE
+
+- [ ] **Result-register field semantics:** distance encoding / target count in
+      regs 0x01/0x04/0x05/0x44.
+- [ ] **Chirp-register meanings:** map the differing regs to start/stop freq,
+      ramp time, ADC rate.
+- [ ] **SPI0/DMA direction + frame format** (CH0CTL DIR, SPI0 CTL0 word).
+- [ ] **Per-mode reconfig tables** (`FUN_08001300`, scatter entry 2).
+- [ ] **PLL/clock word** (`FUN_08005984`) — needed for exact I2C/UART timing.
 
 ## Faithfulness policy
 

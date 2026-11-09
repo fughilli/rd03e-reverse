@@ -141,3 +141,29 @@ pub const BOOT_TABLE: &[RegVal] = &[
 pub fn init(dual: bool) {
     apply_table_all(BOOT_TABLE, dual);
 }
+
+/// Result/status registers the host polls each loop iteration (vendor
+/// `FUN_08004b7c`/`FUN_08004c1c`/`FUN_08004c36`/`FUN_08004c60`). The SoC runs
+/// the radar DSP internally and exposes outputs here; the register *addresses*
+/// are confirmed from the RE, the exact field semantics (distance encoding,
+/// target count) are the remaining interpretation — see docs/re/03-architecture.md.
+pub mod result {
+    use super::{read_reg, DEV0};
+
+    /// Status / mode register (vendor reads reg 0x01 in the loop).
+    pub fn status() -> u16 {
+        read_reg(DEV0, 0x01)
+    }
+    /// Result register 0x04 (vendor FUN_08004c60/FUN_08004bfc).
+    pub fn reg04() -> u16 {
+        read_reg(DEV0, 0x04)
+    }
+    /// Result register 0x05 (vendor FUN_08004c1c).
+    pub fn reg05() -> u16 {
+        read_reg(DEV0, 0x05)
+    }
+    /// Result register 0x44 (vendor FUN_08004c36).
+    pub fn reg44() -> u16 {
+        read_reg(DEV0, 0x44)
+    }
+}
