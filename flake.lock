@@ -1,0 +1,48 @@
+{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1751274312,
+        "narHash": "sha256-/bVBlRpECLVzjV19t5KMdMFWSwKLtb5RyXdjz3LJT+g=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "50ab793786d9de88ee30ec4e4c24fb4236fc2674",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-24.11",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "rules_re": "rules_re"
+      }
+    },
+    "rules_re": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787413388,
+        "narHash": "sha256-g/onTvxfJyoyH1mtohposYCbbJVR4UiqIWpybqY3x7I=",
+        "owner": "fughilli",
+        "repo": "rules_reverse_engineering",
+        "rev": "4731a19580a665c5400af824aec7102eb995b3e1",
+        "type": "github"
+      },
+      "original": {
+        "owner": "fughilli",
+        "repo": "rules_reverse_engineering",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

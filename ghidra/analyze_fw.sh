@@ -52,14 +52,20 @@ OUT="${2:-out/$(basename "${FW%.*}")}"
 REGEX="${3:-.*}"          # vendor images are stripped -> match all by default
 BASE="${4:-0x08000000}"   # GD32E230 flash base; used for .bin + vector table
 
+# Under `bazel run`, CWD is the runfiles tree; resolve user-supplied relative
+# paths against BUILD_WORKING_DIRECTORY (where `bazel run` was invoked) instead.
+INVOKED="${BUILD_WORKING_DIRECTORY:-$PWD}"
+case "$FW"  in /*) : ;; *) FW="$INVOKED/$FW"   ;; esac
+case "$OUT" in /*) : ;; *) OUT="$INVOKED/$OUT" ;; esac
+
 FW="$(cd "$(dirname "$FW")" && pwd)/$(basename "$FW")"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 
 # Local Cortex-M preScript (from the source tree) + the generic post-scripts
 # (from the rules_reverse_engineering runfiles). Ghidra -scriptPath joins dirs
 # with ';'.
-LOCAL_SCRIPTS="$WS/ghidra/scripts"
-RE_SCRIPTS="$(dirname "$(rlocation rules_reverse_engineering/ghidra/scripts/ExportMmio.py)")"
+LOCAL_SCRIPTS="$WS/ghidra/scripts"                              # SetupMemoryMap.py
+RE_SCRIPTS="$(dirname "$(rlocation rules_reverse_engineering/ghidra/scripts/ExportMmio.py)")"  # ExportMmio.py, DecompileFuncs.py
 SCRIPT_PATH="${LOCAL_SCRIPTS};${RE_SCRIPTS}"
 
 proj="$(mktemp -d)"
