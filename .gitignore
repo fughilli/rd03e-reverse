@@ -16,3 +16,6 @@ __pycache__/
 /.bazelisk/
 /.bazel-disk-cache/
 /.bazel-repo-cache/
+
+# Claude per-workspace state + session outputs.
+/.claude/
