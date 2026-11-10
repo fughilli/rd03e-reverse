@@ -66,3 +66,30 @@ RUN PROFILE_STORE_PATH="$(readlink -f /nix/var/nix/profiles/default)" \
 # Must be --system (/etc/gitconfig): --global at build time would write
 # /root/.gitconfig, which the runtime `claude` user never sees.
 RUN git config --system --add safe.directory /workspace
+
+# 2026-11-10: tailscale (static arm64 binaries) + scoped sudo, so launching
+# claude-container with TS_AUTHKEY set joins this container to the user's tailnet
+# and I can drive the rig-radar HITL bench directly. Matches fughilli/splanc's
+# overlay pattern. Runtime also needs NET_ADMIN + /dev/net/tun + the TS_AUTHKEY
+# env, and startup.sh to bring the node up — all declared in overlay.json /
+# startup.sh (both excluded from the image hash, so they never force a rebuild).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        sudo iproute2 iptables \
+    && rm -rf /var/lib/apt/lists/*
+
+# Passwordless sudo scoped to just the tailscale daemon + CLI. The runtime user
+# is created at container start with a host-dependent name/uid, so grant by
+# command path for ALL users rather than naming a user or group.
+RUN printf '%s\n' 'ALL ALL=(root) NOPASSWD: /usr/local/bin/tailscaled, /usr/local/bin/tailscale' \
+        > /etc/sudoers.d/tailscale \
+    && chmod 0440 /etc/sudoers.d/tailscale
+
+# Tailscale 1.104.4 static binaries (statically linked; no systemd — startup.sh
+# runs tailscaled directly). Pinned to the version nixpkgs ships here.
+RUN curl -fsSL -o /tmp/ts.tgz \
+        https://pkgs.tailscale.com/stable/tailscale_1.104.4_arm64.tgz \
+    && tar -xzf /tmp/ts.tgz -C /tmp \
+    && install -m755 /tmp/tailscale_1.104.4_arm64/tailscale  /usr/local/bin/tailscale \
+    && install -m755 /tmp/tailscale_1.104.4_arm64/tailscaled /usr/local/bin/tailscaled \
+    && rm -rf /tmp/ts.tgz /tmp/tailscale_1.104.4_arm64 \
+    && tailscale version
