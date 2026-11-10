@@ -1,0 +1,49 @@
+{
+  "comment": "rig-radar HITL catalog. One COMPOSITE unit 'radar-bench' reserved atomically: the ESP32-C6 radar host (flash + RISC-V JTAG via its built-in USB-JTAG) AND the RP2350 CMSIS-DAP probe wired to the Rd-03E's GD32E230 (SWD). Both are USB; /dev/bus/usb is passed so pyOCD/openocd can do raw USB. FILL IN the two by-id device paths + the C6's USB-JTAG serial (MAC) from the Pi: `ls -l /dev/serial/by-id/`. The toolbox in the reservation env (nix/container.nix) provides: C6 -> hitl-flash/hitl-monitor/hitl-jtag/hitl-gdb; GD32 -> hitl-swd (pyocd gdbserver, GD32 pack baked in)/hitl-swd-dump.",
+  "workspace": "rig-radar",
+  "lease_seconds": 1800,
+  "ssh_port_base": 2222,
+
+  "resource_types": {
+    "esp32c6": {
+      "kind": "usb",
+      "capabilities": ["flash", "jtag", "monitor", "chip:esp32c6"]
+    },
+    "gd32-swd-probe": {
+      "kind": "usb",
+      "capabilities": ["swd", "swd-gd32", "flash-gd32", "gdbserver", "chip:gd32e230"]
+    }
+  },
+
+  "components": [
+    {
+      "name": "c6",
+      "type": "esp32c6",
+      "comment": "ESP32-C6 radar host. Replace <C6-MAC> with the board's USB-JTAG serial (its MAC, as in the by-id path).",
+      "devices": [
+        "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_<C6-MAC>-if00:/dev/ttyACM0",
+        "/dev/bus/usb"
+      ],
+      "env": { "HITL_ADAPTER_SERIAL": "<C6-MAC>" }
+    },
+    {
+      "name": "gd32-probe",
+      "type": "gd32-swd-probe",
+      "comment": "RP2350 running stock debugprobe (fughilli/rp2350-swd-probe), SWD to the Rd-03E GD32E230. Replace <PROBE-SERIAL> with the by-id path from the Pi.",
+      "devices": [
+        "/dev/serial/by-id/usb-Raspberry_Pi_Debug_Probe__CMSIS-DAP__<PROBE-SERIAL>-if00:/dev/ttyACM1",
+        "/dev/bus/usb"
+      ]
+    }
+  ],
+
+  "units": [
+    {
+      "comment": "The radar bench: C6 + GD32 SWD probe, reserved together. Capabilities = union of both components.",
+      "name": "radar-bench",
+      "type": "radar-bench",
+      "components": ["c6", "gd32-probe"],
+      "ssh_port": 2222
+    }
+  ]
+}

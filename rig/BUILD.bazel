@@ -1,0 +1,35 @@
+# rig-radar — Rd-03E HITL runner: Pi 3B+ SD image + live-deploy via sbc-deploy.
+# This dir is a self-contained Bazel workspace (its own MODULE.bazel); build from
+# here (`cd rig`), so rd03e-reverse's RE-harness workspace stays untouched.
+#
+#   bazel run //:rig-radar.keys        -- init                 # deploy keypair
+#   bazel run //:rig-radar.image_sd    -- --cross [--device /dev/diskN]  # build/write the SD image
+#   bazel run //:rig-radar.deploy_live -- rig-radar            # push updates (no reflash)
+#   bazel run //:rig-radar.ssh         -- rig-radar            # shell into the rig
+#   bazel run //:rig-radar.seed_tailscale -- rig-radar -- --authkey file:/var/lib/tailscale/authkey
+#
+# --cross builds the aarch64 image on the Mac (no builder VM; first build compiles
+# the Pi kernel from source since the caches only hold native aarch64).
+load("@sbc_deploy//deploy:defs.bzl", "sbc_application")
+
+# Exactly the files the nix flake build reads, staged into a hermetic TreeArtifact
+# so `nix build` sees deterministic content (not the live workspace / bazel caches).
+filegroup(
+    name = "flake_srcs",
+    srcs = [
+        "flake.lock",
+        "flake.nix",
+        "reserve/catalog.json",
+    ] + glob(["nix/**"]),
+)
+
+sbc_application(
+    name = "rig-radar",
+    # flake.nix is at this workspace root.
+    flake = ".",
+    hostname = "rig-radar",
+    board = "@sbc_deploy//deploy/boards:raspberry-pi-3",
+    # Headless appliance: drop the rescue toolkit / docs / default extras.
+    lean = True,
+    flake_srcs = [":flake_srcs"],
+)

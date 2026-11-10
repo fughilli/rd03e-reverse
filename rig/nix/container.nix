@@ -1,0 +1,680 @@
+# The HITL test container image (nix dockerTools). sshd + an ESP32 toolbox.
+#
+# The manager runs this per reservation with the ESP32 attached and the holder's
+# key mounted at /run/hitl/authorized_keys; the entrypoint installs the key and
+# starts sshd. Toolbox is MVP (flash + serial); BLE/JTAG tools are added as they
+# get exercised (just more packages in `toolbox`).
+#
+# withSdr = true adds the HackRF CLI + GNU Radio (gr-osmosdr) so a composite
+# esp32c6+hackrf reservation (amd-rig, //pi/hitl:hitl_sdr) can drive the SDR
+# alongside the C6, and names the image `hitl-sdr:latest` instead of hitl-test.
+#
+# withAndroid = true adds adb + the x86_64 Android emulator SDK + a system image
+# (nixpkgs upstream — amd-rig is x86_64, so no arm64-Linux gap) + a python that can
+# run the phone-HITL harness (websockets + bumble), and names the image
+# `hitl-phone:latest`. Used by amd-rig's SECOND daemon (nix/hitl-phone-daemon.nix)
+# for the android-phone / android-emu units. The emulator needs /dev/kvm (the unit's
+# kvm component). Distinct daemon from the SDR bench, so distinct image.
+{ pkgs, withSdr ? false, withAndroid ? false }:
+let
+  # esptool pulls python-ecdsa, which nixpkgs currently flags insecure. Permit it
+  # just for this image by re-importing nixpkgs with the allowance, so the caller
+  # needn't set it globally. withAndroid also needs the Android SDK license accepted
+  # + unfree allowed (the emulator + system image are unfree).
+  p = import pkgs.path {
+    inherit (pkgs.stdenv.hostPlatform) system;
+    config = (pkgs.config or { }) // {
+      permittedInsecurePackages = [ "python3.12-ecdsa-0.19.1" ];
+    } // pkgs.lib.optionalAttrs withAndroid {
+      allowUnfree = true;
+      android_sdk.accept_license = true;
+    };
+    # ecdsa's test suite has a flaky signals/threads case
+    # (test_multithreading_with_interrupts asserts a KeyboardInterrupt that a
+    # heavily-parallel/sandboxed builder races and misses). Being insecure-marked,
+    # ecdsa isn't served by cache.nixos.org, so every rig builds it from source and
+    # runs those tests — a non-deterministic deploy failure (hit building this image
+    # on amd-rig's 16-core box). esptool doesn't need ecdsa's tests, so drop them.
+    overlays = [
+      (final: prev: {
+        pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
+          (pyfinal: pyprev: { ecdsa = pyprev.ecdsa.overridePythonAttrs (_: { doCheck = false; }); })
+        ];
+      })
+    ];
+  };
+
+  sshUser = "agent";
+
+  # nixpkgs esptool ships esptool.py/espefuse.py/espsecure.py; add no-suffix
+  # aliases so `esptool` etc. (what agents reflexively type) also work.
+  espAliases = p.runCommand "esp-aliases" { } ''
+    mkdir -p $out/bin
+    ln -s ${p.esptool}/bin/esptool.py   $out/bin/esptool
+    ln -s ${p.esptool}/bin/espefuse.py  $out/bin/espefuse
+    ln -s ${p.esptool}/bin/espsecure.py $out/bin/espsecure
+  '';
+
+  # Python with pyserial + bleak + websockets actually importable (listing them
+  # separately does NOT put them on sys.path). bleak = BLE central via the host
+  # bluetoothd/D-Bus; websockets = the phone-HITL harness driver_server (shipped into
+  # the env on the phone bench). This is the toolbox's `python3` on PATH.
+  pyEnv = p.python3.withPackages (ps: with ps; [ pyserial bleak websockets ]);
+
+  # Android toolbox (withAndroid): adb + the x86_64 emulator SDK + a Google-APIs
+  # x86_64 system image (all from nixpkgs upstream — amd-rig is x86_64), plus a
+  # python that can run the shipped phone-HITL harness in the reservation env
+  # (driver_server → websockets; ble_peripheral → bumble; provisioning → bleak).
+  # The client scp's the harness + built web app into the env and runs phone_e2e
+  # there (the phone's loopback reverses to the RIG, so the app + WS must be rig-local).
+  androidComposition = p.androidenv.composeAndroidPackages {
+    platformVersions = [ "34" ];
+    abiVersions = [ "x86_64" ];
+    systemImageTypes = [ "google_apis" ];
+    includeEmulator = true;
+    includeSystemImages = true;
+    includeSources = false;
+    includeNDK = false;
+  };
+  androidSdkRoot = "${androidComposition.androidsdk}/libexec/android-sdk";
+  androidTools = with p; [
+    android-tools # adb / fastboot (device-facing)
+    androidComposition.androidsdk # emulator + system image + cmdline-tools
+    jdk17 # avdmanager/emulator need a JRE
+    # pyEnv (above) already carries the harness deps (pyserial/bleak/websockets) and is
+    # the toolbox python3. NB: no `bumble` in nixpkgs — the emulator lane's software Improv
+    # peripheral needs it; package it for nix when wiring that lane.
+  ];
+
+  # Espressif OpenOCD — the C6's (RISC-V) built-in USB-JTAG (mainline openocd only
+  # covers Xtensa esp32/s2/s3). Needs raw USB (the daemon passes /dev/bus/usb).
+  openocdEsp = import ./openocd-esp32.nix { pkgs = p; };
+
+  # hitl-jtag: openocd against the C6 built-in USB-JTAG. No args → halt + read pc +
+  # reset-run; otherwise pass through openocd -c commands (e.g. a gdbserver).
+  hitlJtag = p.writeShellApplication {
+    name = "hitl-jtag";
+    text = ''
+      cfg=(-s ${openocdEsp}/share/openocd/scripts -f board/esp32c6-builtin.cfg)
+      # Multi-DUT: with several identical C6 USB-JTAGs on the same bus, select this
+      # DUT's adapter by serial. A leading `--dut N` picks DUT N (resolving
+      # HITL_ADAPTER_SERIAL[_N], set per-DUT by the daemon); `--adapter-serial S`
+      # forces a serial. Default DUT 0 = HITL_ADAPTER_SERIAL, so single-DUT usage is
+      # unchanged; unset serial → openocd auto-picks the sole board.
+      dut=0; serial_override=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --dut) dut="''${2:-0}"; shift 2 ;;
+          --adapter-serial) serial_override="''${2:-}"; shift 2 ;;
+          *) break ;;
+        esac
+      done
+      serial="$serial_override"
+      if [ -z "$serial" ]; then
+        case "$dut" in
+          0) serial="''${HITL_ADAPTER_SERIAL:-}" ;;
+          1) serial="''${HITL_ADAPTER_SERIAL_1:-}" ;;
+          2) serial="''${HITL_ADAPTER_SERIAL_2:-}" ;;
+          *) serial="" ;;
+        esac
+      fi
+      if [ -n "$serial" ]; then
+        cfg+=(-c "adapter serial $serial")
+      fi
+      if [ "$#" -eq 0 ]; then
+        exec ${openocdEsp}/bin/openocd "''${cfg[@]}" -c "init; halt; reg pc; reset run; shutdown"
+      fi
+      exec ${openocdEsp}/bin/openocd "''${cfg[@]}" "$@"
+    '';
+  };
+
+  # riscv32 GDB client for the C6 (nixpkgs has none; host gdb can't debug it).
+  riscvGdb = import ./riscv-gdb.nix { pkgs = p; };
+
+  # hitl-gdb [elf] [extra gdb args]: start the openocd gdbserver in the background
+  # and attach gdb to it. No extra args → interactive; pass -batch -ex … to script.
+  hitlGdb = p.writeShellApplication {
+    name = "hitl-gdb";
+    text = ''
+      # Multi-DUT selector (same as hitl-jtag): leading `--dut N` / `--adapter-serial S`.
+      dut=0; serial_override=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --dut) dut="''${2:-0}"; shift 2 ;;
+          --adapter-serial) serial_override="''${2:-}"; shift 2 ;;
+          *) break ;;
+        esac
+      done
+      elf=""
+      if [ "$#" -gt 0 ] && [ -f "$1" ]; then elf="$1"; shift; fi
+      log=/tmp/hitl-openocd.log
+      serial="$serial_override"
+      if [ -z "$serial" ]; then
+        case "$dut" in
+          0) serial="''${HITL_ADAPTER_SERIAL:-}" ;;
+          1) serial="''${HITL_ADAPTER_SERIAL_1:-}" ;;
+          2) serial="''${HITL_ADAPTER_SERIAL_2:-}" ;;
+          *) serial="" ;;
+        esac
+      fi
+      sel=()
+      # Multi-DUT: target this DUT's USB-JTAG by serial when resolved above.
+      if [ -n "$serial" ]; then
+        sel=(-c "adapter serial $serial")
+      fi
+      ${openocdEsp}/bin/openocd -s ${openocdEsp}/share/openocd/scripts \
+        -f board/esp32c6-builtin.cfg "''${sel[@]}" > "$log" 2>&1 &
+      ocd=$!
+      trap 'kill "$ocd" 2>/dev/null || true' EXIT
+      for _ in $(seq 1 40); do
+        grep -q "Listening on port 3333" "$log" 2>/dev/null && break
+        sleep 0.25
+      done
+      args=(-ex "target remote :3333")
+      if [ -n "$elf" ]; then args=("$elf" "''${args[@]}"); fi
+      exec ${riscvGdb}/bin/riscv32-esp-elf-gdb "''${args[@]}" "$@"
+    '';
+  };
+
+  # hitl-flash: flash a bundle (flash.json + bins) with esptool, offsets from the
+  # manifest, v4/v5 syntax auto-picked. --monitor reads the serial console after.
+  hitlFlash = p.writeTextFile {
+    name = "hitl-flash";
+    executable = true;
+    destination = "/bin/hitl-flash";
+    text = ''
+      #!${pyEnv}/bin/python3
+      import argparse, json, os, re, subprocess, sys, tarfile, tempfile
+      def syntax():
+          v = subprocess.run(["esptool", "version"], capture_output=True, text=True)
+          m = re.search(r"v?(\d+)\.", (v.stdout or "") + (v.stderr or ""))
+          major = int(m.group(1)) if m else 4
+          return ("write-flash", "--flash-mode", "--flash-freq", "--flash-size") if major >= 5 \
+              else ("write_flash", "--flash_mode", "--flash_freq", "--flash_size")
+      def dut_port(dut, explicit):
+          # Resolve the serial port for a reserved DUT: --port wins; else the
+          # daemon-set HITL_TTY[_N] for DUT N; else the ttyACMN positional default.
+          if explicit:
+              return explicit
+          suf = "" if str(dut) == "0" else "_" + str(dut)
+          return os.environ.get("HITL_TTY" + suf,
+                                "/dev/ttyACM" + ("0" if suf == "" else str(dut)))
+      ap = argparse.ArgumentParser()
+      ap.add_argument("bundle")
+      ap.add_argument("--dut", default="0", help="reserved DUT index (0,1,...); resolves --port from HITL_TTY[_N]")
+      ap.add_argument("--port", default=None, help="serial port (overrides --dut)")
+      ap.add_argument("--baud", default="460800")
+      ap.add_argument("--monitor", action="store_true", help="read serial after flashing")
+      ap.add_argument("--monitor-seconds", type=float, default=10.0)
+      # HITL clean-slate: full chip erase before writing, so the DUT comes up with
+      # an empty NVS (no stored WiFi creds -> it does NOT auto-join, it waits in
+      # soft-AP for provisioning) and an empty littlefs (no stale maps). This is a
+      # RIG-ONLY knob: live-device firmware updates use a different path and keep
+      # their stored maps + WiFi config. write_flash still repopulates the 4 images.
+      ap.add_argument("--erase-fs", action="store_true",
+                      help="full chip erase first (wipe NVS creds + littlefs) — HITL clean slate")
+      a = ap.parse_args()
+      a.port = dut_port(a.dut, a.port)
+      d = tempfile.mkdtemp(prefix="hitl-flash-")
+      with tarfile.open(a.bundle) as t: t.extractall(d)
+      m = json.load(open(os.path.join(d, "flash.json")))
+      wf, fm, ff, fs = syntax()
+      # Flash and hard-reset into the app; the monitor then reads the boot logs
+      # that follow (reopen-on-disconnect survives the native-USB re-enumeration).
+      cmd = ["esptool", "--chip", m["chip"], "--port", a.port, "--baud", a.baud,
+             "--after", "hard_reset", wf, fm, m.get("flash_mode", "keep"),
+             ff, m.get("flash_freq", "keep"), fs, m.get("flash_size", "keep")]
+      if a.erase_fs:
+          cmd.append("--erase-all")  # erase whole chip before programming
+      for img in m["images"]:
+          cmd += [img["offset"], os.path.join(d, img["file"])]
+      sys.stderr.write("+ " + " ".join(cmd) + "\n")
+      rc = subprocess.call(cmd)
+      if rc or not a.monitor:
+          sys.exit(rc)
+      # No monitor-side reset: the flash already reset into the app.
+      os.execv("${hitlMonitor}/bin/hitl-monitor",
+               ["hitl-monitor", "--port", a.port,
+                "--seconds", str(a.monitor_seconds)])
+    '';
+  };
+
+  # hitl-monitor: robust serial reader for the ESP32-C6's native USB-Serial-JTAG.
+  # Reopens on disconnect (a chip reset re-enumerates the device), so it catches
+  # the boot logs that follow a reset. --reset issues esptool's native-USB reset.
+  hitlMonitor = p.writeTextFile {
+    name = "hitl-monitor";
+    executable = true;
+    destination = "/bin/hitl-monitor";
+    text = ''
+      #!${pyEnv}/bin/python3
+      import argparse, os, subprocess, sys, time
+      import serial
+      ap = argparse.ArgumentParser()
+      ap.add_argument("--dut", default="0", help="reserved DUT index (0,1,...); resolves --port from HITL_TTY[_N]")
+      ap.add_argument("--port", default=None, help="serial port (overrides --dut)")
+      ap.add_argument("--baud", type=int, default=115200)
+      ap.add_argument("--seconds", type=float, default=0.0, help="0 = until interrupted")
+      ap.add_argument("--reset", action="store_true", help="esptool hard-reset first (catch boot logs)")
+      a = ap.parse_args()
+      if a.port is None:
+          suf = "" if str(a.dut) == "0" else "_" + str(a.dut)
+          a.port = os.environ.get("HITL_TTY" + suf,
+                                  "/dev/ttyACM" + ("0" if suf == "" else str(a.dut)))
+      if a.reset:
+          # esptool knows the native USB-Serial-JTAG reset sequence; a bare RTS
+          # pulse does NOT reset a native-USB C6.
+          subprocess.run(["esptool", "--port", a.port, "--before", "default_reset",
+                          "--after", "hard_reset", "run"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+      deadline = time.time() + a.seconds if a.seconds > 0 else None
+      ser = None
+      try:
+          while deadline is None or time.time() < deadline:
+              if ser is None:
+                  try:
+                      ser = serial.Serial(a.port, a.baud, timeout=0.2)
+                      ser.dtr = False; ser.rts = False
+                  except Exception:
+                      time.sleep(0.1); continue
+              try:
+                  chunk = ser.read(4096)
+                  if chunk:
+                      sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
+              except Exception:
+                  try: ser.close()
+                  except Exception: pass
+                  ser = None; time.sleep(0.1)
+      except KeyboardInterrupt:
+          pass
+      finally:
+          if ser is not None:
+              ser.close()
+    '';
+  };
+
+  # hitl-devices: list the ESP32-C6 DUTs in this reservation and how to address them.
+  # On the amd-rig composite unit (two C6s) the daemon injects HITL_TTY[_N] /
+  # HITL_ADAPTER_SERIAL[_N] per DUT; this prints the DUT→tty/serial map so you know
+  # which `--dut N` selects which board. Single-DUT reservations show just DUT 0.
+  hitlDevices = p.writeShellApplication {
+    name = "hitl-devices";
+    text = ''
+      printf '%-4s %-14s %-20s\n' DUT TTY ADAPTER_SERIAL
+      printf '%-4s %-14s %-20s\n' 0 "''${HITL_TTY:-/dev/ttyACM0}" "''${HITL_ADAPTER_SERIAL:-?}"
+      if [ -n "''${HITL_TTY_1:-}''${HITL_ADAPTER_SERIAL_1:-}" ]; then
+        printf '%-4s %-14s %-20s\n' 1 "''${HITL_TTY_1:-?}" "''${HITL_ADAPTER_SERIAL_1:-?}"
+      fi
+      if [ -n "''${HITL_TTY_2:-}''${HITL_ADAPTER_SERIAL_2:-}" ]; then
+        printf '%-4s %-14s %-20s\n' 2 "''${HITL_TTY_2:-?}" "''${HITL_ADAPTER_SERIAL_2:-?}"
+      fi
+      echo
+      echo "Address a DUT with:  hitl-monitor|hitl-flash|hitl-jtag|hitl-gdb --dut <N>   (default 0)"
+    '';
+  };
+
+  # hitl-ble: BLE central helper (bleak → host bluetoothd over the mounted system
+  # D-Bus socket). Scan for the DUT and dump/read its GATT.
+  hitlBle = p.writeTextFile {
+    name = "hitl-ble";
+    executable = true;
+    destination = "/bin/hitl-ble";
+    text = ''
+      #!${pyEnv}/bin/python3
+      import argparse, asyncio, os, sys
+      # The container has no /var/run/dbus; point dbus-fast at the mounted socket.
+      os.environ.setdefault("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/run/dbus/system_bus_socket")
+      from bleak import BleakScanner, BleakClient
+      # Route BLE at the adapter the daemon selected (a USB dongle on rigs whose
+      # onboard controller is flaky); bleak's BlueZ backend defaults to hci0.
+      _adp = os.environ.get("HITL_BLE_ADAPTER", "").strip()
+      _akw = {"adapter": _adp} if _adp else {}
+      async def scan(seconds, name):
+          found = await BleakScanner.discover(timeout=seconds, return_adv=True, **_akw)
+          for addr, (d, adv) in sorted(found.items()):
+              if name and name.lower() not in (d.name or "").lower():
+                  continue
+              print("%s  rssi=%s  %s" % (addr, adv.rssi, d.name or ""))
+      async def gatt(address):
+          async with BleakClient(address, **_akw) as c:
+              for s in c.services:
+                  print("service %s" % s.uuid)
+                  for ch in s.characteristics:
+                      print("  char %s  [%s]" % (ch.uuid, ",".join(ch.properties)))
+      ap = argparse.ArgumentParser(prog="hitl-ble")
+      sub = ap.add_subparsers(dest="cmd", required=True)
+      s = sub.add_parser("scan"); s.add_argument("--seconds", type=float, default=6.0); s.add_argument("--name", default="")
+      g = sub.add_parser("gatt"); g.add_argument("address")
+      a = ap.parse_args()
+      try:
+          asyncio.run(scan(a.seconds, a.name) if a.cmd == "scan" else gatt(a.address))
+      except Exception as e:
+          sys.exit("hitl-ble: %s" % e)
+    '';
+  };
+
+  # hitl-capture: thin client for the rig's SHARED logic analyzer. The FX2 stays
+  # on the host (owned by the daemon); this POSTs to the daemon's shared-resource
+  # broker (/shared/logic-analyzer, op=capture) over the podman host gateway
+  # ($HITL_BROKER_URL), naming this reservation's unit ($HITL_UNIT), and prints the
+  # decoded pixels. No sigrok or raw USB in the container. Stdlib only.
+  hitlCapture = p.writeTextFile {
+    name = "hitl-capture";
+    executable = true;
+    destination = "/bin/hitl-capture";
+    text = ''
+      #!${pyEnv}/bin/python3
+      import argparse, base64, json, os, sys, urllib.request, urllib.error
+      ap = argparse.ArgumentParser(prog="hitl-capture",
+          description="capture + decode this unit's LED line via the rig's shared logic analyzer")
+      ap.add_argument("--dut", default=os.environ.get("HITL_UNIT") or os.environ.get("HITL_DUT", ""),
+                      help="unit name to capture (default $HITL_UNIT)")
+      ap.add_argument("--server", default=os.environ.get("HITL_BROKER_URL") or os.environ.get("HITL_CAPTURE_SERVER", ""),
+                      help="daemon base URL (default $HITL_BROKER_URL)")
+      ap.add_argument("--protocol", default="", help="override decoder: ws2812|spi")
+      ap.add_argument("--samples", type=int, default=0, help="capture length (0 = rig default)")
+      ap.add_argument("--sr", default="", help="also write the raw .sr session to this file")
+      ap.add_argument("--json", action="store_true", help="print the raw JSON result")
+      # --timing: the broker's op=timing (streamed WS2812 frame/edge timing; see
+      # hitl-reserve README "Logic-analyzer ops"). Without --json prints a summary.
+      ap.add_argument("--timing", action="store_true", help="frame/edge timing capture instead of one decoded frame")
+      ap.add_argument("--duration-ms", type=int, default=0, help="timing window (default 1000; rig cap 60000)")
+      ap.add_argument("--samplerate", default="", help="timing samplerate, e.g. 12m (default: rig's)")
+      ap.add_argument("--reset-us", type=float, default=0, help="LOW >= this ends a frame (default 50)")
+      ap.add_argument("--gap-threshold-us", type=float, default=0, help="report intra-frame LOWs >= this (default 20)")
+      ap.add_argument("--split-gap-us", type=float, default=0, help="flag frames preceded by a shorter LOW (default 1000)")
+      ap.add_argument("--anomalies-only", action="store_true", help="list only flagged frames")
+      ap.add_argument("--no-frames", action="store_true", help="summary only")
+      ap.add_argument("--pixels", action="store_true", help="decode pixels per frame (first --max-pixel-frames)")
+      ap.add_argument("--max-pixel-frames", type=int, default=0)
+      ap.add_argument("--edges", action="store_true", help="include raw run-length edges")
+      ap.add_argument("--edges-format", default="", help="uvarint (default) | json")
+      ap.add_argument("--max-edges", type=int, default=0)
+      a = ap.parse_args()
+      if not a.server:
+          sys.exit("hitl-capture: no daemon URL ($HITL_BROKER_URL unset; pass --server)")
+      if a.timing:
+          req = {"op": "timing", "unit": a.dut, "samples": a.samples, "duration_ms": a.duration_ms,
+                 "samplerate": a.samplerate, "reset_us": a.reset_us, "gap_threshold_us": a.gap_threshold_us,
+                 "split_gap_us": a.split_gap_us, "anomalies_only": a.anomalies_only,
+                 "include_frames": not a.no_frames, "include_pixels": a.pixels,
+                 "max_pixel_frames": a.max_pixel_frames, "include_edges": a.edges,
+                 "edges_format": a.edges_format, "max_edges": a.max_edges}
+          req = {k: v for k, v in req.items() if v not in (0, "", None) or k == "include_frames"}
+          timeout = 120 + (a.duration_ms or 1000) / 1000.0
+      else:
+          req = {"op": "capture", "unit": a.dut, "protocol": a.protocol, "samples": a.samples, "save_sr": bool(a.sr)}
+          timeout = 60
+      body = json.dumps(req).encode()
+      try:
+          with urllib.request.urlopen(
+                  urllib.request.Request(a.server.rstrip("/") + "/shared/logic-analyzer", data=body,
+                                         headers={"Content-Type": "application/json"}),
+                  timeout=timeout) as r:
+              res = json.loads(r.read())
+      except urllib.error.HTTPError as e:
+          sys.exit("hitl-capture: %s: %s" % (e.code, e.read().decode(errors="replace")))
+      except Exception as e:
+          sys.exit("hitl-capture: %s" % e)
+      if a.sr and res.get("sr"):
+          with open(a.sr, "wb") as f:
+              f.write(base64.b64decode(res["sr"]))
+          sys.stderr.write("hitl-capture: wrote raw session to %s\n" % a.sr)
+      if a.json:
+          json.dump(res, sys.stdout); print()
+      elif a.timing:
+          c, s = res.get("capture", {}), res.get("summary", {})
+          print("capture: %s @ %d Hz, %d/%d samples (%.1f ms)%s" % (
+              c.get("channel"), c.get("sample_rate", 0), c.get("samples", 0), c.get("requested_samples", 0),
+              c.get("duration_ms", 0), "  DROP SUSPECTED" if c.get("drop_suspected") else ""))
+          for n in c.get("notes") or []:
+              print("  note: " + n)
+          st = lambda k: s.get(k) or {}
+          print("frames: %d (%d complete), modal %d LEDs, histogram %s" % (
+              s.get("frames", 0), s.get("complete_frames", 0), s.get("modal_leds", 0), s.get("led_histogram")))
+          print("anomalies: runts=%d oversize=%d partial_bits=%d gaps=%d short_gap_before=%d bad_bit=%d max_intra_gap=%.1fus" % (
+              s.get("runts", 0), s.get("oversize", 0), s.get("partial_bit_frames", 0), s.get("frames_with_gaps", 0),
+              s.get("short_gap_before", 0), s.get("bad_bit_frames", 0), s.get("max_intra_gap_us", 0)))
+          for k in ("period_us", "duration_us", "gap_before_us", "intra_gap_max_us"):
+              v = st(k)
+              print("  %-16s min %.1f  med %.1f  p99 %.1f  max %.1f" % (k, v.get("min", 0), v.get("median", 0), v.get("p99", 0), v.get("max", 0)))
+          b = s.get("bit") or {}
+          for k in ("t0h_ns", "t1h_ns", "low_ns", "bit_period_ns"):
+              v = b.get(k) or {}
+              print("  %-16s min %.0f  med %.0f  max %.0f" % (k, v.get("min", 0), v.get("median", 0), v.get("max", 0)))
+          for f in res.get("frames") or []:
+              if f.get("flags"):
+                  print("  frame %d @%.1fus: %d LEDs (+%d bits) dur %.1fus gap_before %s max_gap %.1fus %s %s" % (
+                      f["index"], f["start_us"], f["leds"], f["trailing_bits"], f["duration_us"],
+                      f.get("gap_before_us"), f["max_intra_gap_us"], ",".join(f["flags"]),
+                      " ".join("[+%.1fus %.1fus @bit %d]" % (g["at_us"], g["len_us"], g["bit"]) for g in f.get("gaps") or [])))
+      else:
+          for i, px in enumerate(res.get("pixels") or []):
+              print("%3d: #%02x%02x%02x" % (i, px["r"], px["g"], px["b"]))
+    '';
+  };
+
+  # SDR toolbox (withSdr): the HackRF CLI + GNU Radio with the osmocom source
+  # block, built exactly as ai-sdr's flake does (gnuradio.override extraPackages =
+  # [ gnuradioPackages.osmosdr ]). Lets a composite esp32c6+hackrf holder capture
+  # IQ / run flowgraphs against the HackRF alongside flashing/debugging the C6.
+  grWithOsmo = p.gnuradio.override { extraPackages = [ p.gnuradioPackages.osmosdr ]; };
+  # A python3 that can `import gnuradio, osmosdr`, exposed under a distinct name so
+  # it never shadows the ESP toolbox's pyEnv python3 (pyserial/bleak) on PATH.
+  # Write flowgraphs (see ai-sdr) and run them with `gnuradio-python flow.py`.
+  gnuradioPython = p.runCommand "gnuradio-python" { } ''
+    mkdir -p $out/bin
+    ln -s ${grWithOsmo.pythonEnv}/bin/python3 $out/bin/gnuradio-python
+  '';
+  sdrTools = with p; [
+    hackrf # hackrf_info / hackrf_transfer / hackrf_sweep
+    soapyhackrf # SoapySDR HackRF backend
+    grWithOsmo # gnuradio-companion / gr_modtool / gnuradio-config-info + gr-osmosdr
+    gnuradioPython # `gnuradio-python flow.py`
+    # WiFi + BT stack for talking to the ESP over the full protocol while the SDR
+    # captures the PHY. Usable because the SDR bench runs the env with host
+    # networking (--net-host) + the host D-Bus socket (--mount); the radios live on
+    # the host (see nix/hitl-sdr.nix). iw/wpa_supplicant/hostapd = STA/AP/monitor
+    # over nl80211; bluez (bluetoothctl/btmon) drives the host bluetoothd; the base
+    # toolbox already carries bluez + hitl-ble.
+    iw
+    wpa_supplicant # wpa_supplicant + wpa_cli (STA)
+    hostapd # AP
+    iproute2 # ip / ss
+  ];
+
+  # --- GD32E230 (Rd-03E radar host MCU) SWD, over an RP2350 CMSIS-DAP probe ----
+  # The radar bench adds a second debug target: the GD32 driving the S3KM111L.
+  # pyOCD speaks SWD to it through the RP2350 running stock debugprobe firmware
+  # (fughilli/rp2350-swd-probe). GD32E230 isn't a pyOCD built-in, so vendor its
+  # CMSIS Device Family Pack and pass it with --pack.
+  gd32Pack = p.fetchurl {
+    url = "https://gd32mcu.com/data/documents/pack/GigaDevice.GD32E23x_DFP.1.0.2.pack";
+    sha256 = "95f6db1f0b0669ee910ea2d28ad8d340a80502b352b9d94ec0f561d56c574330";
+  };
+  # arm-none-eabi-gdb (for driving the GD32 via the openocd/pyocd gdbserver).
+  armGdb = p.gcc-arm-embedded;
+
+  # hitl-swd: pyOCD against the GD32 over the CMSIS-DAP probe, GD32 pack baked in.
+  # No args → a GDB server on :3333 for gd32e230k8; otherwise pass pyocd args
+  # (pack trails, where pyocd wants it), e.g. `hitl-swd list`, `hitl-swd commander`.
+  hitlSwd = p.writeShellApplication {
+    name = "hitl-swd";
+    runtimeInputs = [ p.pyocd ];
+    text = ''
+      pack=${gd32Pack}
+      if [ "$#" -eq 0 ]; then
+        exec pyocd gdbserver --target gd32e230k8 --persist --pack "$pack"
+      fi
+      exec pyocd "$@" --pack "$pack"
+    '';
+  };
+
+  # hitl-swd-dump <out.bin>: read the GD32's 64 KB flash (0x08000000) to a file.
+  hitlSwdDump = p.writeShellApplication {
+    name = "hitl-swd-dump";
+    runtimeInputs = [ p.pyocd ];
+    text = ''
+      out="''${1:-gd32-flash.bin}"
+      pack=${gd32Pack}
+      pyocd commander --target gd32e230k8 --pack "$pack" \
+        -c "savemem 0x08000000 0x10000 $out"
+      echo "wrote $out" >&2
+    '';
+  };
+
+  toolbox = with p; [
+    bashInteractive
+    coreutils
+    openssh
+    # ESP flashing + serial (MVP):
+    esptool
+    espAliases
+    picocom
+    pyEnv
+    hitlFlash
+    hitlMonitor
+    # Lists the reserved DUTs (DUT→tty/serial map) so you know which `--dut N` is which.
+    hitlDevices
+    # Shared logic analyzer capture (thin client to the daemon's /shared broker):
+    hitlCapture
+    # BLE central (drives the host bluetoothd over the mounted system D-Bus).
+    # ImprovBLE provisioning isn't a baked tool: the e2e harness ships its own
+    # provisioner (pi/hitl/harness/hitl_improv.py) and runs it with this python3.
+    hitlBle
+    # bluez also brings `btmon`: the daemon captures BLE HCI host-side and mounts
+    # the btsnoop read-only at /run/hitl/capture/hci.btsnoop, so `btmon -r` reads
+    # a live/finished capture in-container (`hitl btmon fetch` pulls it out).
+    bluez
+    # JTAG/debug over the C6 built-in USB-JTAG (needs the daemon's /dev/bus/usb):
+    openocdEsp
+    hitlJtag
+    riscvGdb
+    hitlGdb
+    # SWD debug/flash for the GD32E230 radar host over the RP2350 CMSIS-DAP probe
+    # (needs the daemon's /dev/bus/usb passthrough, same as the C6 JTAG):
+    pyocd
+    armGdb
+    hitlSwd
+    hitlSwdDump
+    # --- next layers (add as exercised) ---
+    # linuxPackages.usbip           # attach the dev board inside the container
+    # openocd gdb                   # JTAG debug port
+    # bluez python3Packages.bleak   # BLE scan/connect/commands
+  ] ++ p.lib.optionals withSdr sdrTools ++ p.lib.optionals withAndroid androidTools;
+  toolPath = p.lib.makeBinPath toolbox;
+
+  sshdConfig = p.writeText "sshd_config" ''
+    # Port is set on the sshd command line from $HITL_SSH_PORT (default 22), not
+    # here: with bridge networking the daemon publishes 22 -> the unit's host port,
+    # but under host networking (--net-host, the SDR bench) there's no publish, so
+    # sshd must bind the unit port itself (and NOT 22, which the host sshd owns).
+    PermitRootLogin no
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    UsePAM no
+    AuthorizedKeysFile /home/${sshUser}/.ssh/authorized_keys
+    Subsystem sftp ${p.openssh}/libexec/sftp-server
+    PidFile /run/sshd.pid
+    SetEnv PATH=${toolPath}:/bin:/usr/bin DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
+    # The daemon injects per-reservation HITL_* env (HITL_UNIT, HITL_BROKER_URL,
+    # HITL_ADAPTER_SERIAL, …) via `podman -e`; that reaches sshd's process but not the
+    # session it spawns. Read them from ~/.ssh/environment (written by the entrypoint)
+    # so both interactive shells and `ssh host cmd` (the harness capture path) see them.
+    PermitUserEnvironment yes
+  '';
+
+  entrypoint = p.writeShellApplication {
+    name = "hitl-entrypoint";
+    runtimeInputs = [ p.openssh p.coreutils p.gnugrep ];
+    text = ''
+      user="''${HITL_SSH_USER:-${sshUser}}"
+      mkdir -p /run /etc/ssh
+      ssh-keygen -A                 # host keys under /etc/ssh
+      # Fix home ownership at runtime (root here); build-time chown isn't allowed.
+      chown -R "$user":"$user" "/home/$user" 2>/dev/null || true
+      install -d -m700 -o "$user" -g "$user" "/home/$user/.ssh"
+      if [ -f /run/hitl/authorized_keys ]; then
+        install -m600 -o "$user" -g "$user" /run/hitl/authorized_keys "/home/$user/.ssh/authorized_keys"
+        echo "hitl: installed $(wc -l < "/home/$user/.ssh/authorized_keys") authorized key(s) for $user" >&2
+      else
+        echo "hitl: WARN no /run/hitl/authorized_keys mounted" >&2
+      fi
+      # Diagnostics for pubkey-auth issues (StrictModes checks these):
+      ls -lad "/home/$user" "/home/$user/.ssh" "/home/$user/.ssh/authorized_keys" >&2 2>/dev/null || true
+      # Expose the per-reservation HITL_* env (set on this process by `podman -e`) to
+      # SSH sessions. sshd doesn't pass its own env to sessions; PermitUserEnvironment
+      # + ~/.ssh/environment does, for both interactive shells and `ssh host cmd`
+      # (e.g. the harness running hitl-capture, which defaults to $HITL_BROKER_URL).
+      printenv | grep -E '^HITL_[A-Za-z0-9_]+=' > "/home/$user/.ssh/environment" || true
+      chown "$user":"$user" "/home/$user/.ssh/environment" 2>/dev/null || true
+      chmod 600 "/home/$user/.ssh/environment" 2>/dev/null || true
+      # Make passed-through serial/JTAG nodes usable by the (non-root) agent —
+      # they arrive with the host's root:dialout 660 perms. The container is
+      # ephemeral + single-user, so opening them up is fine.
+      for dev in /dev/ttyACM* /dev/ttyUSB*; do
+        if [ -e "$dev" ]; then chmod a+rw "$dev" 2>/dev/null || true; fi
+      done
+      # Bind the unit's sshd port: $HITL_SSH_PORT under host networking (--net-host,
+      # the SDR bench), else 22 (bridge mode publishes it to the unit's host port).
+      exec ${p.openssh}/bin/sshd -D -e -f ${sshdConfig} -o "Port=''${HITL_SSH_PORT:-22}"
+    '';
+  };
+in
+p.dockerTools.buildLayeredImage {
+  # hitl-sdr for the amd-rig SDR bench (esp32c6+hackrf), hitl-test for the Pi rigs;
+  # the app module's --image / imageRef must match (hitl-sdr.nix / hitl-app.nix).
+  name = if withAndroid then "hitl-phone" else if withSdr then "hitl-sdr" else "hitl-test";
+  tag = "latest";
+  # zstd, not the dockerTools default gz. This image is ~4 GB uncompressed and
+  # gets compressed on the ephemeral builder VM, which is the bottleneck: for an
+  # x86 target that VM is QEMU under TCG on Apple Silicon (no HVF for x86-on-ARM)
+  # with -smp 6, so every CPU second costs several. nixpkgs offers no compression
+  # LEVEL knob here — `compressor` selects a named pipeline (none | gz | zstd,
+  # `pigz -p$NIX_BUILD_CORES -nTR` vs `zstd -T$NIX_BUILD_CORES`) — but the level
+  # knob isn't what we want anyway. Measured on amd-rig over 2 GiB of this very
+  # image, single-threaded so the numbers are per core:
+  #     gzip -6    35.7 MB/s   34.2% of raw   (the gz pipeline's level)
+  #     gzip -1   112.3 MB/s   37.9%
+  #     zstd -3   283.7 MB/s   30.4%          (the zstd pipeline's default)
+  # zstd -3 is ~8x faster per core AND ~11% smaller, so it beats dropping gzip to
+  # -1 on both axes — no larger artifact to trade away. Output becomes
+  # hitl-sdr.tar.zst; nothing depends on the extension (hitl-image-load does
+  # `podman load -i ${image}` on the store path) and podman 5.4.1 on the rigs
+  # sniffs the compression itself.
+  compressor = "zstd";
+  contents = toolbox;
+  # Minimal rootfs: the agent + sshd-privsep users, /tmp, a login profile that
+  # puts the toolbox on PATH for interactive SSH shells.
+  extraCommands = ''
+    mkdir -p tmp var/empty home/${sshUser} run etc/profile.d
+    chmod 1777 tmp
+    cat > etc/passwd <<EOF
+    root:x:0:0:root:/root:${p.bashInteractive}/bin/bash
+    ${sshUser}:x:1000:1000:agent:/home/${sshUser}:${p.bashInteractive}/bin/bash
+    sshd:x:74:74:sshd privsep:/var/empty:${p.shadow}/bin/nologin
+    EOF
+    cat > etc/group <<EOF
+    root:x:0:
+    ${sshUser}:x:1000:
+    sshd:x:74:
+    EOF
+    printf 'export PATH=%s:/bin:/usr/bin\n' "${toolPath}" > etc/profile
+    cp etc/profile etc/bashrc
+  '';
+  config = {
+    Cmd = [ "${entrypoint}/bin/hitl-entrypoint" ];
+    ExposedPorts = { "22/tcp" = { }; };
+    Env = [
+      "PATH=${toolPath}:/bin:/usr/bin"
+      # bleak/dbus-fast default to /var/run/dbus/... which the container lacks;
+      # point them at the mounted host socket so BLE reaches the host bluetoothd.
+      "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket"
+    ] ++ p.lib.optionals withAndroid [
+      # adb/avdmanager/emulator + the harness resolve the SDK from here (launcher.py
+      # _sdk_tool reads $ANDROID_SDK_ROOT).
+      "ANDROID_SDK_ROOT=${androidSdkRoot}"
+      "ANDROID_HOME=${androidSdkRoot}"
+    ];
+  };
+}

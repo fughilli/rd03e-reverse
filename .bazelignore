@@ -1,3 +1,4 @@
 .bazelisk
 .bazel-disk-cache
 .bazel-repo-cache
+rig
