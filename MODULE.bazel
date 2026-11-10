@@ -23,3 +23,16 @@ git_override(
 )
 
 bazel_dep(name = "rules_shell", version = "0.6.1")
+
+# The HITL rig (//rig): a Pi 3B+ SD image + live-deploy via sbc-deploy. Folded
+# into this single workspace (was a nested MODULE.bazel) so the whole project is
+# one Bazel repo. Pinned in lockstep with the sbc-deploy input in //rig/flake.nix
+# (same rev). sbc-deploy targets Bazel 7.7.1 upstream but resolves on this repo's
+# 8.3.1; its nix_repo extension uses isolate=True, hence the isolated-usages flag
+# in //.bazelrc.
+bazel_dep(name = "sbc_deploy", version = "0.0.0")
+git_override(
+    module_name = "sbc_deploy",
+    remote = "https://github.com/fughilli/sbc-deploy.git",
+    commit = "23c03bdcefa0cd4b90ea1ec611456984d91a389a",
+)

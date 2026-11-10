@@ -1,4 +1,8 @@
 .bazelisk
 .bazel-disk-cache
 .bazel-repo-cache
-rig
+.bazel-c6-root
+rd03e-c6-host
+rp2350-swd-probe
+out
+ghidra/out

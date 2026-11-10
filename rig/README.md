@@ -14,8 +14,11 @@ exposes **one composite unit, `radar-bench`**, reserved atomically:
 So an agent reserves `radar-bench` over the tailnet and drives both the C6 and the
 radar's GD32 without tying up any ports on a laptop.
 
-This is a nested Bazel workspace (its own `MODULE.bazel`) inside `rd03e-reverse`,
-so the RE-harness workspace is untouched. Build from this directory (`cd rig`).
+This is a package (`//rig`) of the `rd03e-reverse` Bazel workspace — `sbc-deploy`
+is a `bazel_dep` in the repo-root `MODULE.bazel`, so there is no separate
+workspace here. Its NixOS SD image is built from this dir's own `flake.nix`
+(pinned to sbc-deploy's nixpkgs, distinct from the RE harness's). Run everything
+from the **repo root** (no `cd`).
 
 ## Commission (from the Mac, SD card attached)
 
@@ -23,29 +26,27 @@ Prereqs: Nix + Bazel on the Mac. The first `--cross` build compiles the Pi kerne
 from source (the binary caches only hold native aarch64), so it is slow once.
 
 ```sh
-cd rig
-
 # 1. One-time deploy keypair.
-bazel run //:rig-radar.keys -- init
+bazel run //rig:rig-radar.keys -- init
 
 # 2. Build the SD image and write it to the card (cross-compile on the Mac).
 #    Find the card with `diskutil list`; --no-write to just build the .img.
-bazel run //:rig-radar.image_sd -- --cross --device /dev/diskN
+bazel run //rig:rig-radar.image_sd -- --cross --device /dev/diskN
 
 # 3. Boot the Pi 3B+ (Ethernet is simplest; or set WiFi — see nix/network.nix).
 #    It comes up as rig-radar.local.
 
-# 4. Seed the tailnet auth key (gitignored, already at ../credentials/tailscale.key)
+# 4. Seed the tailnet auth key (gitignored, at credentials/tailscale.key)
 #    so it joins the tailnet as `rig-radar`:
-bazel run //:rig-radar.ssh -- rig-radar.local \
+bazel run //rig:rig-radar.ssh -- rig-radar.local \
     'install -d -m700 /var/lib/tailscale'
-cat ../credentials/tailscale.key | \
-  bazel run //:rig-radar.ssh -- rig-radar.local \
+cat credentials/tailscale.key | \
+  bazel run //rig:rig-radar.ssh -- rig-radar.local \
     'cat > /var/lib/tailscale/authkey && chmod 600 /var/lib/tailscale/authkey && systemctl restart tailscaled-autoconnect'
-#    (or: bazel run //:rig-radar.seed_tailscale -- rig-radar.local -- --authkey "$(cat ../credentials/tailscale.key)")
+#    (or: bazel run //rig:rig-radar.seed_tailscale -- rig-radar.local -- --authkey "$(cat credentials/tailscale.key)")
 
 # 5. Fill in the two device paths (see below), then push:
-bazel run //:rig-radar.deploy_live -- rig-radar
+bazel run //rig:rig-radar.deploy_live -- rig-radar
 ```
 
 ## Fill in the catalog device paths (`reserve/catalog.json`)
@@ -54,7 +55,7 @@ The composite unit needs stable `by-id` paths for the two USB devices. After the
 Pi is up with the C6 and the RP2350 probe plugged in, read them:
 
 ```sh
-bazel run //:rig-radar.ssh -- rig-radar 'ls -l /dev/serial/by-id/'
+bazel run //rig:rig-radar.ssh -- rig-radar 'ls -l /dev/serial/by-id/'
 ```
 
 Replace in `reserve/catalog.json`:
@@ -64,7 +65,7 @@ Replace in `reserve/catalog.json`:
 - `<PROBE-SERIAL>` — the RP2350 debugprobe's serial in its
   `usb-Raspberry_Pi_Debug_Probe__CMSIS-DAP__<SERIAL>-if00` path.
 
-Then `bazel run //:rig-radar.deploy_live -- rig-radar` to apply (no reflash).
+Then `bazel run //rig:rig-radar.deploy_live -- rig-radar` to apply (no reflash).
 
 ## Drive it (from the container / any tailnet host)
 
@@ -83,7 +84,7 @@ hitl-jtag / hitl-gdb                        # C6 RISC-V JTAG / GDB
 ```
 flake.nix          mkSbcProject: board raspberry-pi-3, hostName rig-radar
 MODULE.bazel       sbc_deploy git_override (pinned in lockstep with flake.nix)
-BUILD.bazel        sbc_application //:rig-radar.{keys,image_sd,deploy_live,ssh,seed_tailscale}
+BUILD.bazel        sbc_application //rig:rig-radar.{keys,image_sd,deploy_live,ssh,seed_tailscale}
 nix/hitl-app.nix   Pi system: podman + tailscale + hitl-image-load + the daemon
 nix/container.nix  reservation env toolbox: C6 (esptool/openocd-esp32/riscv-gdb) + GD32 (pyocd/arm-gdb)
 nix/openocd-esp32.nix, nix/riscv-gdb.nix, nix/packages.nix   vendored from splanc pi/hitl

@@ -15,6 +15,10 @@ common --repository_cache=.bazel-repo-cache  # external archives; survives resta
 # it is not needed for persistence — disable it rather than place it in-tree.
 common --repo_contents_cache=
 
+# sbc-deploy's nix_repo extension uses `isolate = True` (see //rig), which Bazel
+# only permits for an isolated extension usage.
+common --experimental_isolated_extension_usages
+
 test --test_output=errors
 
 # Harmless on hosts without SVE; guards against a SIGILL on some aarch64 +
