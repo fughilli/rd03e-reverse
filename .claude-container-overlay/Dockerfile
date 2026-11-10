@@ -77,12 +77,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         sudo iproute2 iptables \
     && rm -rf /var/lib/apt/lists/*
 
-# Passwordless sudo scoped to just the tailscale daemon + CLI. The runtime user
-# is created at container start with a host-dependent name/uid, so grant by
-# command path for ALL users rather than naming a user or group.
-RUN printf '%s\n' 'ALL ALL=(root) NOPASSWD: /usr/local/bin/tailscaled, /usr/local/bin/tailscale' \
-        > /etc/sudoers.d/tailscale \
-    && chmod 0440 /etc/sudoers.d/tailscale
+# Passwordless sudo for the runtime user `claude` (the entrypoint always names it
+# `claude`, mapping the host uid/gid in). startup.sh needs more than the tailscale
+# binaries — `sudo mkdir` for the state/socket dirs, etc. — so a command-scoped
+# rule is too narrow (it denies `sudo mkdir` and the daemon never starts). Broad
+# NOPASSWD is the norm for this single-user dev container.
+RUN printf '%s\n' 'claude ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/claude \
+    && chmod 0440 /etc/sudoers.d/claude
 
 # Tailscale 1.104.4 static binaries (statically linked; no systemd — startup.sh
 # runs tailscaled directly). Pinned to the version nixpkgs ships here.

@@ -29,9 +29,9 @@
     {
       "name": "gd32-probe",
       "type": "gd32-swd-probe",
-      "comment": "RP2350 running stock debugprobe (fughilli/rp2350-swd-probe), SWD to the Rd-03E GD32E230. Replace <PROBE-SERIAL> with the by-id path from the Pi.",
+      "comment": "RP2350 (Pico 2) running stock debugprobe (fughilli/rp2350-swd-probe), SWD to the Rd-03E GD32E230. Real by-id from the rig 2026-11-10: a Pico running debugprobe enumerates as 'Debugprobe_on_Pico' and exposes only its CDC-ACM UART as a tty (-if01); the CMSIS-DAP interface is raw-USB (pyOCD finds it by serial over /dev/bus/usb).",
       "devices": [
-        "/dev/serial/by-id/usb-Raspberry_Pi_Debug_Probe__CMSIS-DAP__<PROBE-SERIAL>-if00:/dev/ttyACM1",
+        "/dev/serial/by-id/usb-Raspberry_Pi_Debugprobe_on_Pico__CMSIS-DAP__ECD6FE919F95A523-if01:/dev/ttyACM1",
         "/dev/bus/usb"
       ]
     }

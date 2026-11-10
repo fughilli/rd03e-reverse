@@ -109,7 +109,9 @@ in
         "--privileged=false"
         "--state-dir /var/lib/hitl"
         "--max-concurrent 1"
-        "--ssh-port ${toString sshPort}"
+        # NB: this hitl-reserve build has no --ssh-port (only --darwin-ssh-port);
+        # the podman runner publishes container sshd from the catalog's
+        # ssh_port_base. sshPort/dutPorts below still drive the firewall range.
         "--broker-url http://host.containers.internal:${toString apiPort}"
         # Serialize flash/USB-serial on the Pi 3's single USB bus.
         "--mount /run/hitl-flash:/run/hitl/flash-lock"
