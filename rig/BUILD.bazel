@@ -31,5 +31,13 @@ sbc_application(
     board = "@sbc_deploy//deploy/boards:raspberry-pi-3",
     # Headless appliance: drop the rescue toolkit / docs / default extras.
     lean = True,
-    flake_srcs = [":flake_srcs"],
+    # NOTE: hermetic flake staging (flake_srcs = [":flake_srcs"]) is intentionally
+    # NOT used. Its StageFlakeSrc action cps each source by its sandbox-relative
+    # path (`rig/flake.lock`), which macOS's sandbox-exec fails to expose
+    # (`cp: rig/flake.lock: No such file or directory`) — the same /var-symlink
+    # class of macOS quirk that bites deploy_live. Omitting flake_srcs makes nix
+    # read $BUILD_WORKSPACE_DIRECTORY/rig directly (the real checkout path, no
+    # sandbox). rig/ holds no mutable Bazel caches (those are at the repo root),
+    # so there's no narHash leak to worry about. The flake_srcs filegroup is kept
+    # below for a future hermetic re-enable once the macOS staging path is fixed.
 )
