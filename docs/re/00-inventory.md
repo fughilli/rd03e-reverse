@@ -35,6 +35,11 @@ and full analysis plan are in [`09-handoff.md`](09-handoff.md).
 - [x] **Concrete S3KM111L register defaults:** extracted — 80 `{reg,val}` writes
       (`regmap/boot-2268.csv`, baked into `firmware/src/s3km111l.rs`). The flash
       `.data` was armlink-compressed; `tools/unpack_data.py` unpacks it.
+- [x] **On-silicon confirmation:** a 64 KB SWD flash dump of a real module
+      (`dumps/gd32e230k8_build2268_flash.bin`) is **byte-identical to build 2268**
+      in the code region (SP `0x20001E28`, reset `0x080000E0` match the RE);
+      only the upper calibration page differs. Read protection is off.
+      [`dumps/README.md`](dumps/README.md).
 - [x] **Signal chain location:** radar DSP runs **on the S3KM111L SoC**; the GD32
       is a thin host (poll result regs + UART report). [`03-architecture.md`](03-architecture.md).
 - [x] **UART protocol:** Ai-Thinker framing (`FD FC FB FA`/`04 03 02 01` config,
