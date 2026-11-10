@@ -31,3 +31,6 @@ __pycache__/
 
 # Standalone nested repo (its own git repo; pushed separately).
 /rd03e-c6-host/
+
+# Stray cross-build output base (ESP32-C6 firmware build).
+/.bazel-c6-root/
