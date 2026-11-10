@@ -19,12 +19,12 @@
     {
       "name": "c6",
       "type": "esp32c6",
-      "comment": "ESP32-C6 radar host. Replace <C6-MAC> with the board's USB-JTAG serial (its MAC, as in the by-id path).",
+      "comment": "ESP32-C6 radar host. USB-JTAG serial (its MAC) read from the rig 2026-11-10: 98:88:E0:71:08:10 (303a:1001, native USB-Serial-JTAG).",
       "devices": [
-        "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_<C6-MAC>-if00:/dev/ttyACM0",
+        "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_98:88:E0:71:08:10-if00:/dev/ttyACM0",
         "/dev/bus/usb"
       ],
-      "env": { "HITL_ADAPTER_SERIAL": "<C6-MAC>" }
+      "env": { "HITL_ADAPTER_SERIAL": "98:88:E0:71:08:10" }
     },
     {
       "name": "gd32-probe",
