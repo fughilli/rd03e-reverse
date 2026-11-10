@@ -20,6 +20,17 @@ SWD, for cross-checking the reverse engineering.
 - Vectors: initial SP `0x20001E28`, reset handler `0x080000E0` — matching the
   static RE (`../09-handoff.md`, `../00-inventory.md`).
 
+### Restoring a module (full revert)
+
+This `.bin` is the **complete 64 KB flash image** — code **and** the
+`0x0800F400+` calibration page. To fully revert *this* module to the exact state
+captured here, flash the whole 64 KB back to `0x08000000` (e.g. `pyocd flash` /
+`probe-rs download` over SWD). Flashing only the vendor `.hex` restores the code
+but leaves the calibration page blank, which may degrade or break ranging if the
+firmware does not regenerate it. It is not yet confirmed whether this calibration
+is factory-write-once or self-regenerated at boot, so treat this full dump as the
+authoritative restore image and keep it safe.
+
 ### Provenance / attribution
 
 The firmware code is **Ai-Thinker's proprietary Rd-03E firmware**, not ours. It
