@@ -25,3 +25,9 @@ __pycache__/
 
 # Rust firmware build artifacts.
 /firmware/target/
+
+# Standalone nested repo (its own git repo; pushed separately).
+/rp2350-swd-probe/
+
+# Standalone nested repo (its own git repo; pushed separately).
+/rd03e-c6-host/
