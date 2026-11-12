@@ -30,6 +30,10 @@ pub const I2C0: u32 = 0x4000_5400;
 pub const SPI0: u32 = 0x4001_3000;
 pub const USART1: u32 = 0x4000_4400;
 pub const TIMER2: u32 = 0x4000_0400;
+pub const FMC: u32 = 0x4002_2000;
+
+// FMC register offsets.
+pub const FMC_WS: u32 = 0x00; // wait-state control (WSCNT + prefetch)
 
 // RCU register offsets.
 pub const RCU_CTL: u32 = 0x00;

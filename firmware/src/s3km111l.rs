@@ -8,10 +8,12 @@
 
 use crate::i2c;
 
-/// Primary radar device (7-bit I2C address). A second SoC at `DEV1` is driven
-/// in lock-step on dual-array boards.
-pub const DEV0: u8 = 0x40;
-pub const DEV1: u8 = 0x44;
+/// Primary radar device (7-bit I2C address). The vendor quotes the devices as
+/// their 8-bit address bytes 0x40/0x44 (it writes them to I2C_DATA with bit0
+/// masked for R/W, `FUN_08007db0`), so the 7-bit addresses are 0x20/0x22 —
+/// our i2c layer shifts left by 1 and adds the R/W bit. Verified on HW.
+pub const DEV0: u8 = 0x20;
+pub const DEV1: u8 = 0x22;
 
 /// One register-table entry (vendor layout is `[reg:u8][pad:u8][val:u16]`).
 #[derive(Clone, Copy)]
