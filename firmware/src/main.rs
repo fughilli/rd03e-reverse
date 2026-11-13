@@ -16,6 +16,7 @@ use cortex_m_rt::entry;
 use panic_halt as _;
 
 mod datapath;
+mod dsp;
 mod gpio;
 mod i2c;
 mod pac;
@@ -24,9 +25,13 @@ mod rcu;
 mod s3km111l;
 mod usart;
 
-/// Radar sample ring buffer that DMA fills from SPI0 (size is a placeholder
-/// until the real frame geometry is known).
-static mut FRAME_BUF: [u16; 256] = [0; 256];
+/// Circular DMA buffer that SPI0-slave/DMA-CH1 fills from the SoC stream.
+/// 200 bytes = two ~100-byte frames, matching the vendor (datapath.rs).
+static mut FRAME_BUF: [u8; datapath::BUF_LEN] = [0; datapath::BUF_LEN];
+
+/// Debug mirror of the last report (readable over SWD): [type, value, bin, tick].
+#[no_mangle]
+static mut DBG_REPORT: [u16; 4] = [0; 4];
 
 #[entry]
 fn main() -> ! {
@@ -36,32 +41,56 @@ fn main() -> ! {
     i2c::init(); // S3KM111L control bus (PB6/PB7, 1 MHz)
     usart::init(); // host UART (J2)
 
-    // Radar control: replay the boot register table over I2C (TODO: fill it).
+    // Let the S3KM111L power up after PA9 enable before configuring it (~20 ms).
+    cortex_m::asm::delay(1_440_000);
+
+    // Radar control: replay the 80-entry boot register table over I2C.
     let dual = false; // single-SoC board; set true to also drive dev 0x44
     s3km111l::init(dual);
 
-    // Radar data: stream SPI0 into FRAME_BUF via DMA.
-    // SAFETY: single-threaded bring-up; the DMA owns FRAME_BUF after this.
-    let buf: &mut [u16] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_BUF) };
+    // Radar data path: SPI0 slave + DMA channel 1 receive the SoC's framed
+    // stream into FRAME_BUF (circular), exactly as the vendor does — config
+    // read live over SWD (datapath.rs). The SoC, now configured above, is the
+    // SPI master and streams ~100-byte `AA 30 …` frames.
+    let buf: &mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_BUF) };
     datapath::init_rx(buf);
 
-    // Main poll/report loop — the vendor's `do { collect; report } while(true)`
-    // (FUN_08007e4c). The S3KM111L runs the radar DSP internally; the host polls
-    // its result registers over I2C and emits Ai-Thinker report frames on USART1.
+    // Full from-source chain: parse the captured frames and report the range
+    // field on USART1 in the vendor's `55 55 AA AA <type> <lo> <hi>` format.
+    // type 2 = target (value = per-frame range field, XX>>3), type 0 = no frame
+    // found this tick. This is the coarse pre-filter value; matching the
+    // vendor's smoothed distance needs the tracking filter (docs/re/05). ~50 Hz.
+    // Detect the target range bin (+0x6a = XX>>3, dropping the 31 no-detection
+    // default), IIR-smooth it, scale to centimetres, and report as the vendor's
+    // type-2 frame; type 0 when the target is lost. Calibration ~18.2 cm/bin
+    // (bin 11 = 2 m, HW + FFT confirmed; refine with a distance sweep).
+    // smooth is bin in Q8 fixed point; dist_cm = smooth * 182 / 2560.
+    // We compute range ourselves: DFT the frame's range-profile samples and take
+    // the peak bin (HW: dead-stable vs the SoC's noisy +0x6a field — docs/re/06).
+    // Smooth lightly; distance = 18.2 cm/bin (bin 11 = 2 m; refine with a sweep).
+    let base = core::ptr::addr_of!(FRAME_BUF) as *const u8;
+    let mut smooth_q4: u32 = 0; // smoothed sub-bin position (bin × 16)
+    let mut have = false;
+    let mut samples = [0i16; dsp::N];
     loop {
-        let status = s3km111l::result::status();
-        let r04 = s3km111l::result::reg04();
-        let r05 = s3km111l::result::reg05();
-
-        // Report payload. TODO: lay this out per the documented Rd-03E ranging
-        // report (target distance/energy); the register reads above are the
-        // confirmed source. This is also the hook for a custom algorithm —
-        // post-process here, or reconfigure the SoC via s3km111l::write_reg().
-        let payload = [
-            status as u8, (status >> 8) as u8,
-            r04 as u8, (r04 >> 8) as u8,
-            r05 as u8, (r05 >> 8) as u8,
-        ];
-        protocol::send_report(&payload);
+        let (ty, val, bin, magh) = if datapath::extract_samples(base, datapath::BUF_LEN, &mut samples) {
+            let (q4, mag) = dsp::peak_bin_q4(&samples);
+            smooth_q4 = if have { (smooth_q4 * 3 + q4 as u32) / 4 } else { q4 as u32 };
+            have = true;
+            let dist_cm = (smooth_q4 * 182 / 160) as u16; // (q4/16)·18.2 cm/bin
+            let magh = (mag >> 20).min(65535) as u16; // presence/strength indicator
+            (2u16, dist_cm, (smooth_q4 >> 4) as u16, magh)
+        } else {
+            (0u16, 0u16, 0u16, 0u16)
+        };
+        protocol::send_raw(ty as u8, val);
+        unsafe {
+            let d = core::ptr::addr_of_mut!(DBG_REPORT);
+            (*d)[0] = ty;
+            (*d)[1] = val;
+            (*d)[2] = bin;
+            (*d)[3] = magh;
+        }
+        cortex_m::asm::delay(3_600_000); // ~50 ms @ 72 MHz
     }
 }
