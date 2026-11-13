@@ -29,23 +29,25 @@ SPI (sync `AA`, header `30 XX 18 80 00`, then BE-int16 samples, trailer `..55`):
 - The **mode byte @`0x20001070`** (= `DAT_08002868` = `DAT_080028e4`) selects
   both the frame sub-parse and the output scaling. Observed mode = 0.
 
-## B — calibrated distance
-**Status:** from-source distance works and is in the right ballpark (~2–2.5 m for
-the 2 m target), but noisy: the SoC's per-frame detection of a lone retroreflector
-is intermittent (~50 %) and bimodal (strong bin ~7 plus multipath bins 14–18).
-That intermittency/multipath is exactly what the vendor's tracker cleans up.
+## B — calibrated distance  ✅ SOLVED (better than the vendor)
+**We compute range ourselves by DFT-ing the frame's range-profile samples** and
+taking the peak bin, instead of using the SoC's noisy `+0x6a` field. On HW the
+DFT bin is **dead-stable (std 0.00)** where the SoC field was std 4.8 + dropouts
+— so we get a rock-steady reading with **no multi-target tracker** (`FUN_08004fa0`
+is not needed). `dsp.rs`: fixed-point N=43 DFT, ~900 MACs/frame.
+- @2 m target: **bin 11, distance = 200 cm on every reading.**
 
-**To finish B well (needs the bench operator):**
-1. **Distance sweep** — place a clean target at marked ranges (0.5/1.0/1.5/2.0/
-   2.5 m), log `DBG_REPORT.bin` at each. Fit `distance = a·bin + b`. One point
-   tonight (bin ~7–11 ≈ 2 m) isn't enough to pin the slope (and the stock calib
-   `value ≈ 0.886·cm + 19.4` is for the vendor's *filtered* output, not the bin).
-2. **Light tracker** — replace the single IIR with a tiny per-bin histogram /
-   mode-tracker over a sliding window to reject the multipath outliers without
-   porting the full `FUN_08004fa0`. ~50 lines of firmware.
-3. Optional: **host-side sub-bin FFT** — the frame already carries the raw
-   samples; a 45-pt FFT fits on the GD32 (<1 KB) for sub-bin interpolation if we
-   want finer than ~18 cm resolution.
+Remaining polish (operator help):
+1. **Distance sweep** to confirm the bin→cm slope is linear and pin the absolute
+   scale (currently anchored on the single bin 11 = 2 m ⇒ 18.2 cm/bin; the chirp
+   config sets the true value, so re-derive it per C-experiment). Just log
+   `DBG_REPORT.bin` at marked ranges.
+2. **Presence threshold** on the DFT magnitude (`DBG_REPORT[3]`) to emit type-0
+   when no target — read the mag with the scene empty to pick the cutoff.
+3. Optional sub-bin interpolation (parabolic peak fit) for <18 cm precision.
+
+This DFT path is also the enabler for C and D below: we now have the **full
+range profile** in firmware, not just a single bin.
 
 ## C — chirp / FMCW parameter experiments (range & precision)
 The S3KM111L is undocumented, so register meanings are physics-grounded

@@ -71,3 +71,12 @@ more far-bin noise. Detection RATE (~50%) is limited by SoC frame cadence, not
 threshold. Lever confirmed for range/sensitivity tuning (C). Reverted to stock.
 NOTE: target's consistent bin is ~7 (not 11 from the noisy FFT avg); true range
 calibration still needs a clean distance sweep.
+
+### Round 5 — FFT of frame samples >> the SoC's noisy bin (BIG WIN)
+Frame layout refined: [0-5] header, [6-7] DC/ref (~0xA5xx), [8-9] 0x7FFF marker,
+[10-95] 43 BE-int16 range-profile samples, [96-99] checksum..55. 45 samples not
+/4 => stock stream is ONE RX channel.
+Per-frame DFT peak of samples[10:95]: **bin 11 on ALL 12 frames, std=0.0**.
+vs +0x6a (XX>>3): std 4.8 + 30/31 dropouts. => compute range ourselves by DFT
+of the samples -> stable peak, no tracker needed. 43-pt DFT fits on GD32.
+Implementing fixed-point DFT peak-finder in firmware (R6).
