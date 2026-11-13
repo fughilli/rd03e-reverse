@@ -71,3 +71,8 @@ pub const DMA_CH0CTL: u32 = 0x08;
 pub const DMA_CH0CNT: u32 = 0x0C;
 pub const DMA_CH0PADDR: u32 = 0x10;
 pub const DMA_CH0MADDR: u32 = 0x14;
+// Channel 1 = SPI0_RX (confirmed live: PADDR=SPI0_DATA, CTL=0x20a7 circular).
+pub const DMA_CH1CTL: u32 = 0x1C;
+pub const DMA_CH1CNT: u32 = 0x20;
+pub const DMA_CH1PADDR: u32 = 0x24;
+pub const DMA_CH1MADDR: u32 = 0x28;

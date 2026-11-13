@@ -92,6 +92,43 @@ range_cm  = 1.129 · value16  − 21.9
   it. Extending range means raising the far‑range thresholds and/or re‑profiling
   the chirp — bounded by SNR∝1/R⁴, ADC Nyquist, and the SoC's range‑gate count.
 
+## Confirmed datapath register config (live SWD read of vendor firmware)
+
+Read off the running build-2268 firmware over SWD (2026-11-13), so these are the
+exact values our from-source `datapath.rs` replays:
+
+**SPI0 (0x40013000) — GD32 is the SPI *slave*; the SoC is master:**
+| Reg | Value | Meaning |
+| --- | --- | --- |
+| CTL0 | `0x0040` | SPE only → MSTMOD=0 (**slave**), mode 0 (CPOL/CPHA=0), 8-bit (FF16=0), MSB-first |
+| CTL1 | `0x0001` | DMAREN (RX DMA request enable) |
+| DATA | `0x..55` | live: holding a `0x55` frame byte |
+
+NSS = PA4 (AF0, hardware NSS, driven by the SoC). SCK=PA5, MOSI=PA7 (SoC→host).
+
+**DMA (0x40020000) — channel 1 = SPI0 RX, channel 3 = USART1 TX:**
+| Ch | CTL | CNT | PADDR | MADDR | role |
+| --- | --- | --- | --- | --- | --- |
+| CH1 | `0x20a7` | 200 | `0x4001300c` (SPI0_DATA) | `0x200013a4` | **SPI0 RX** |
+| CH3 | `0x3093` | — | `0x40004428` (USART1_TDATA) | `0x20001c84` | USART1 TX (reports) |
+
+CH1 CTL `0x20a7` = CHEN | FTFIE | HTFIE | CMEN(circular) | MNAGA(mem-incr) |
+PRIO=high; PWIDTH=MWIDTH=8-bit; DIR=0 (peripheral→memory). The 200-byte circular
+buffer holds two frames; the parser uses the half/full-transfer flags to know
+which half is complete.
+
+**RCU clock enables (0x40021014):** AHBEN=`0x00060015` (DMA + GPIOA/B),
+APB2EN=`0x00001001` (SPI0 + SYSCFG), APB1EN=`0x00220002` (USART1 + I2C0).
+
+**Live frame bytes (from the SPI0 RX buffer at 0x200013a4):**
+```
+aa 30 f0 18 80 00 80 00 76 69 67 cf eb 79 e6 92 fb 47 ...   (~100 bytes)
+aa 30 f8 18 80 00 80 00 76 5a 67 8c eb 6d e6 92 fb 52 ...
+```
+`0xAA` sync + `0x30` header nibble (the `0x30` case in `FUN_080025e4`), then
+`F0 18` / `80 00 80 00` and signed-16-bit sample data; one ~100-byte frame per
+sync. This is the exact input `FUN_0800207c` parses into the range field.
+
 ## Reproduce
 
 C6 runs the listen‑only firmware (`//:esp32c6_listen`), which prints one line
