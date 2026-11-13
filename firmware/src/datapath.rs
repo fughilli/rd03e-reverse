@@ -112,6 +112,24 @@ pub fn detected_bin(buf_ptr: *const u8, len: usize) -> Option<u8> {
     }
 }
 
+/// Extract the 43 range-profile samples (bytes [10:95], BE int16) from the most
+/// recent `AA 30` frame in the ring into `out`. Returns false if no frame found.
+/// Volatile reads (DMA writes concurrently).
+pub fn extract_samples(buf_ptr: *const u8, len: usize, out: &mut [i16; crate::dsp::N]) -> bool {
+    let rd8 = |i: usize| unsafe { core::ptr::read_volatile(buf_ptr.add(i % len)) };
+    for i in 0..len {
+        if rd8(i) == 0xAA && rd8(i + 1) == 0x30 {
+            for k in 0..crate::dsp::N {
+                let hi = rd8(i + 10 + 2 * k) as u16;
+                let lo = rd8(i + 11 + 2 * k) as u16;
+                out[k] = ((hi << 8) | lo) as i16;
+            }
+            return true;
+        }
+    }
+    false
+}
+
 /// Polled-slave fallback (no DMA): forward each received SPI byte out USART1.
 /// Kept for bring-up bisection; the DMA path above is the real one.
 #[allow(dead_code)]

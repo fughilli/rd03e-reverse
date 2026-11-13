@@ -16,6 +16,7 @@ use cortex_m_rt::entry;
 use panic_halt as _;
 
 mod datapath;
+mod dsp;
 mod gpio;
 mod i2c;
 mod pac;
@@ -64,36 +65,24 @@ fn main() -> ! {
     // type-2 frame; type 0 when the target is lost. Calibration ~18.2 cm/bin
     // (bin 11 = 2 m, HW + FFT confirmed; refine with a distance sweep).
     // smooth is bin in Q8 fixed point; dist_cm = smooth * 182 / 2560.
+    // We compute range ourselves: DFT the frame's range-profile samples and take
+    // the peak bin (HW: dead-stable vs the SoC's noisy +0x6a field — docs/re/06).
+    // Smooth lightly; distance = 18.2 cm/bin (bin 11 = 2 m; refine with a sweep).
     let base = core::ptr::addr_of!(FRAME_BUF) as *const u8;
     let mut smooth_q8: u32 = 0;
     let mut have = false;
-    let mut miss: u8 = 0;
-    let mut tick: u16 = 0;
+    let mut samples = [0i16; dsp::N];
     loop {
-        tick = tick.wrapping_add(1);
-        let (ty, val, bin) = match datapath::detected_bin(base, datapath::BUF_LEN) {
-            Some(bin) => {
-                miss = 0;
-                let b = (bin as u32) << 8;
-                // IIR 7/8 — heavy smoothing to ride out the noisy intermittent bins.
-                smooth_q8 = if have { (smooth_q8 * 7 + b) / 8 } else { b };
-                have = true;
-                let dist_cm = (smooth_q8 * 182 / 2560) as u16;
-                (2u16, dist_cm, bin as u16)
-            }
-            None => {
-                miss = miss.saturating_add(1);
-                if miss > 40 {
-                    have = false; // target lost after a long gap (~2 s)
-                }
-                if have {
-                    // Coast on the held estimate through short detection gaps.
-                    let dist_cm = (smooth_q8 * 182 / 2560) as u16;
-                    (2u16, dist_cm, (smooth_q8 >> 8) as u16)
-                } else {
-                    (0u16, 0u16, 0u16)
-                }
-            }
+        let (ty, val, bin, magh) = if datapath::extract_samples(base, datapath::BUF_LEN, &mut samples) {
+            let (bin, mag) = dsp::peak_bin(&samples);
+            let b = (bin as u32) << 8;
+            smooth_q8 = if have { (smooth_q8 * 3 + b) / 4 } else { b };
+            have = true;
+            let dist_cm = (smooth_q8 * 182 / 2560) as u16;
+            let magh = (mag >> 20).min(65535) as u16; // presence/strength indicator
+            (2u16, dist_cm, bin as u16, magh)
+        } else {
+            (0u16, 0u16, 0u16, 0u16)
         };
         protocol::send_raw(ty as u8, val);
         unsafe {
@@ -101,7 +90,7 @@ fn main() -> ! {
             (*d)[0] = ty;
             (*d)[1] = val;
             (*d)[2] = bin;
-            (*d)[3] = tick;
+            (*d)[3] = magh;
         }
         cortex_m::asm::delay(3_600_000); // ~50 ms @ 72 MHz
     }
