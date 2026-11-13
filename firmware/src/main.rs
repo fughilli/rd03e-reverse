@@ -28,6 +28,10 @@ mod usart;
 /// 200 bytes = two ~100-byte frames, matching the vendor (datapath.rs).
 static mut FRAME_BUF: [u8; datapath::BUF_LEN] = [0; datapath::BUF_LEN];
 
+/// Debug mirror of the last report (readable over SWD): [type, value, bin, tick].
+#[no_mangle]
+static mut DBG_REPORT: [u16; 4] = [0; 4];
+
 #[entry]
 fn main() -> ! {
     // Hardware bring-up, in the vendor's order (docs/re/02-bus.md call tree).
@@ -55,11 +59,49 @@ fn main() -> ! {
     // type 2 = target (value = per-frame range field, XX>>3), type 0 = no frame
     // found this tick. This is the coarse pre-filter value; matching the
     // vendor's smoothed distance needs the tracking filter (docs/re/05). ~50 Hz.
+    // Detect the target range bin (+0x6a = XX>>3, dropping the 31 no-detection
+    // default), IIR-smooth it, scale to centimetres, and report as the vendor's
+    // type-2 frame; type 0 when the target is lost. Calibration ~18.2 cm/bin
+    // (bin 11 = 2 m, HW + FFT confirmed; refine with a distance sweep).
+    // smooth is bin in Q8 fixed point; dist_cm = smooth * 182 / 2560.
     let base = core::ptr::addr_of!(FRAME_BUF) as *const u8;
+    let mut smooth_q8: u32 = 0;
+    let mut have = false;
+    let mut miss: u8 = 0;
+    let mut tick: u16 = 0;
     loop {
-        match datapath::latest_range(base, datapath::BUF_LEN) {
-            Some(v) => protocol::send_raw(2, v),
-            None => protocol::send_raw(0, 0),
+        tick = tick.wrapping_add(1);
+        let (ty, val, bin) = match datapath::detected_bin(base, datapath::BUF_LEN) {
+            Some(bin) => {
+                miss = 0;
+                let b = (bin as u32) << 8;
+                // IIR 7/8 — heavy smoothing to ride out the noisy intermittent bins.
+                smooth_q8 = if have { (smooth_q8 * 7 + b) / 8 } else { b };
+                have = true;
+                let dist_cm = (smooth_q8 * 182 / 2560) as u16;
+                (2u16, dist_cm, bin as u16)
+            }
+            None => {
+                miss = miss.saturating_add(1);
+                if miss > 40 {
+                    have = false; // target lost after a long gap (~2 s)
+                }
+                if have {
+                    // Coast on the held estimate through short detection gaps.
+                    let dist_cm = (smooth_q8 * 182 / 2560) as u16;
+                    (2u16, dist_cm, (smooth_q8 >> 8) as u16)
+                } else {
+                    (0u16, 0u16, 0u16)
+                }
+            }
+        };
+        protocol::send_raw(ty as u8, val);
+        unsafe {
+            let d = core::ptr::addr_of_mut!(DBG_REPORT);
+            (*d)[0] = ty;
+            (*d)[1] = val;
+            (*d)[2] = bin;
+            (*d)[3] = tick;
         }
         cortex_m::asm::delay(3_600_000); // ~50 ms @ 72 MHz
     }

@@ -83,6 +83,35 @@ pub fn latest_range(buf_ptr: *const u8, len: usize) -> Option<u16> {
     None
 }
 
+/// Scan the ring for `AA 30` frames and return the **detected range bin**
+/// (`XX>>3`, 0..30) averaged over the frames that detected a target, or `None`
+/// when no frame detected one. The SoC writes bin **31** (`XX≈0xF8`) as its
+/// no-detection default, so we drop 31. Confirmed on HW + by FFT of the sample
+/// payload: a 2 m retroreflector lands on bin ~11. Volatile reads (DMA writes).
+pub fn detected_bin(buf_ptr: *const u8, len: usize) -> Option<u8> {
+    let rd8 = |i: usize| unsafe { core::ptr::read_volatile(buf_ptr.add(i % len)) };
+    let mut sum = 0u16;
+    let mut count = 0u16;
+    for i in 0..len {
+        if rd8(i) == 0xAA && rd8(i + 1) == 0x30 {
+            let bin = rd8(i + 2) >> 3;
+            // Gate to the real target band: reject >= 28 (bin 30/31 = the SoC's
+            // no-detection default, past the ~3 m stock range) AND < 5 (close-in
+            // clutter / antenna coupling at ~0.5 m that the SoC's own tracker
+            // also discards). Confirmed noisy/bimodal on HW for the 2 m reflector.
+            if (5..28).contains(&bin) {
+                sum += bin as u16;
+                count += 1;
+            }
+        }
+    }
+    if count > 0 {
+        Some((sum / count) as u8)
+    } else {
+        None
+    }
+}
+
 /// Polled-slave fallback (no DMA): forward each received SPI byte out USART1.
 /// Kept for bring-up bisection; the DMA path above is the real one.
 #[allow(dead_code)]
