@@ -50,13 +50,17 @@ fn main() -> ! {
     let buf: &mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_BUF) };
     datapath::init_rx(buf);
 
-    // Bring-up heartbeat: stream the DMA write cursor so the host can confirm
-    // the SPI RX is live and advancing (type 0x40 = byte offset into the ring).
-    // The frame bytes themselves are verified by reading FRAME_BUF over SWD;
-    // the parser port (FUN_0800207c -> distance) builds on this. ~50 Hz.
+    // Full from-source chain: parse the captured frames and report the range
+    // field on USART1 in the vendor's `55 55 AA AA <type> <lo> <hi>` format.
+    // type 2 = target (value = per-frame range field, XX>>3), type 0 = no frame
+    // found this tick. This is the coarse pre-filter value; matching the
+    // vendor's smoothed distance needs the tracking filter (docs/re/05). ~50 Hz.
+    let base = core::ptr::addr_of!(FRAME_BUF) as *const u8;
     loop {
-        let pos = datapath::dma_pos(datapath::BUF_LEN) as u16;
-        protocol::send_raw(0x40, pos);
-        cortex_m::asm::delay(1_440_000); // ~20 ms @ 72 MHz
+        match datapath::latest_range(base, datapath::BUF_LEN) {
+            Some(v) => protocol::send_raw(2, v),
+            None => protocol::send_raw(0, 0),
+        }
+        cortex_m::asm::delay(3_600_000); // ~50 ms @ 72 MHz
     }
 }

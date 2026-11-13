@@ -63,6 +63,26 @@ pub fn dma_pos(buf_len: usize) -> usize {
     buf_len.wrapping_sub(remaining) % buf_len.max(1)
 }
 
+/// Parse the most recent frame header in the circular buffer and return the
+/// per-frame range field the vendor's parser extracts.
+///
+/// Frame: `AA 30 XX 18 80 00 <samples>`. The vendor walks the mode-0 path
+/// (`FUN_080025e4` case 0 on the `0x30`, then `FUN_08002764` case 0 on `XX`):
+/// `+0x6a = ((0x30<<28)>>23) = 0`, then `+0x6a += XX>>3`. So the extracted
+/// range field is `XX >> 3` — the coarse, pre-tracking-filter value the vendor
+/// feeds to `FUN_08002450`. The vendor then smooths it across frames
+/// (`FUN_08004fa0`) for its final report; that filter is not ported here
+/// (see docs/re/05-calibration.md). Reads are volatile: DMA writes concurrently.
+pub fn latest_range(buf_ptr: *const u8, len: usize) -> Option<u16> {
+    let rd8 = |i: usize| unsafe { core::ptr::read_volatile(buf_ptr.add(i % len)) };
+    for i in 0..len {
+        if rd8(i) == 0xAA && rd8(i + 1) == 0x30 {
+            return Some((rd8(i + 2) >> 3) as u16);
+        }
+    }
+    None
+}
+
 /// Polled-slave fallback (no DMA): forward each received SPI byte out USART1.
 /// Kept for bring-up bisection; the DMA path above is the real one.
 #[allow(dead_code)]
