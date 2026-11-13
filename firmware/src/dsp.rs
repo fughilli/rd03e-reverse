@@ -28,13 +28,13 @@ static SIN: [i32; N] = [
     -13908, -9440, -4771,
 ];
 
-/// Peak DFT bin (`1..=N/2`) of the DC-removed samples — the target range bin —
-/// and its magnitude² (for a presence/strength threshold).
-pub fn peak_bin(x: &[i16; N]) -> (u8, i64) {
+const HALF: usize = N / 2; // 21 usable bins
+
+/// All DFT magnitude² values for bins `1..=HALF` of the DC-removed samples.
+fn spectrum(x: &[i16; N]) -> [i64; HALF + 1] {
     let mean: i32 = x.iter().map(|&v| v as i32).sum::<i32>() / N as i32;
-    let mut best_mag: i64 = 0;
-    let mut best_k: usize = 1;
-    for k in 1..=N / 2 {
+    let mut mags = [0i64; HALF + 1];
+    for k in 1..=HALF {
         let mut re: i64 = 0;
         let mut im: i64 = 0;
         for n in 0..N {
@@ -45,11 +45,46 @@ pub fn peak_bin(x: &[i16; N]) -> (u8, i64) {
         }
         let r = re >> 15;
         let i = im >> 15;
-        let mag = r * r + i * i;
-        if mag > best_mag {
-            best_mag = mag;
+        mags[k] = r * r + i * i;
+    }
+    mags
+}
+
+/// Peak DFT bin (`1..=N/2`) of the DC-removed samples — the target range bin —
+/// and its magnitude² (for a presence/strength threshold).
+pub fn peak_bin(x: &[i16; N]) -> (u8, i64) {
+    let mags = spectrum(x);
+    let mut best_k = 1;
+    for k in 1..=HALF {
+        if mags[k] > mags[best_k] {
             best_k = k;
         }
     }
-    (best_k as u8, best_mag)
+    (best_k as u8, mags[best_k])
+}
+
+/// Peak bin refined to sub-bin precision (Q4: bin × 16) via parabolic
+/// interpolation of the peak and its two neighbours, plus the peak magnitude².
+/// δ = 0.5·(a−c)/(a−2b+c), clamped to ±0.5 bin. Sharpens range below the
+/// ~18 cm bin spacing without a bigger transform.
+pub fn peak_bin_q4(x: &[i16; N]) -> (u16, i64) {
+    let mags = spectrum(x);
+    let mut best_k = 1;
+    for k in 1..=HALF {
+        if mags[k] > mags[best_k] {
+            best_k = k;
+        }
+    }
+    let mut q4 = (best_k as i32) << 4;
+    if best_k > 1 && best_k < HALF {
+        let a = mags[best_k - 1];
+        let b = mags[best_k];
+        let c = mags[best_k + 1];
+        let denom = a - 2 * b + c; // < 0 at a peak
+        if denom != 0 {
+            let delta_q4 = (8 * (a - c) / denom) as i32; // 16·0.5·(a−c)/denom
+            q4 += delta_q4.clamp(-8, 8);
+        }
+    }
+    (q4 as u16, mags[best_k])
 }

@@ -69,18 +69,17 @@ fn main() -> ! {
     // the peak bin (HW: dead-stable vs the SoC's noisy +0x6a field — docs/re/06).
     // Smooth lightly; distance = 18.2 cm/bin (bin 11 = 2 m; refine with a sweep).
     let base = core::ptr::addr_of!(FRAME_BUF) as *const u8;
-    let mut smooth_q8: u32 = 0;
+    let mut smooth_q4: u32 = 0; // smoothed sub-bin position (bin × 16)
     let mut have = false;
     let mut samples = [0i16; dsp::N];
     loop {
         let (ty, val, bin, magh) = if datapath::extract_samples(base, datapath::BUF_LEN, &mut samples) {
-            let (bin, mag) = dsp::peak_bin(&samples);
-            let b = (bin as u32) << 8;
-            smooth_q8 = if have { (smooth_q8 * 3 + b) / 4 } else { b };
+            let (q4, mag) = dsp::peak_bin_q4(&samples);
+            smooth_q4 = if have { (smooth_q4 * 3 + q4 as u32) / 4 } else { q4 as u32 };
             have = true;
-            let dist_cm = (smooth_q8 * 182 / 2560) as u16;
+            let dist_cm = (smooth_q4 * 182 / 160) as u16; // (q4/16)·18.2 cm/bin
             let magh = (mag >> 20).min(65535) as u16; // presence/strength indicator
-            (2u16, dist_cm, bin as u16, magh)
+            (2u16, dist_cm, (smooth_q4 >> 4) as u16, magh)
         } else {
             (0u16, 0u16, 0u16, 0u16)
         };
