@@ -87,7 +87,8 @@ pub fn latest_range(buf_ptr: *const u8, len: usize) -> Option<u16> {
 /// (`XX>>3`, 0..30) averaged over the frames that detected a target, or `None`
 /// when no frame detected one. The SoC writes bin **31** (`XX≈0xF8`) as its
 /// no-detection default, so we drop 31. Confirmed on HW + by FFT of the sample
-/// payload: a 2 m retroreflector lands on bin ~11. Volatile reads (DMA writes).
+/// payload: higher bin = CLOSER, R[m]≈3.29−0.183·bin (docs/re/05), so bin ~11 ≈
+/// 1.28 m. Volatile reads (DMA writes).
 pub fn detected_bin(buf_ptr: *const u8, len: usize) -> Option<u8> {
     let rd8 = |i: usize| unsafe { core::ptr::read_volatile(buf_ptr.add(i % len)) };
     let mut sum = 0u16;
@@ -98,7 +99,7 @@ pub fn detected_bin(buf_ptr: *const u8, len: usize) -> Option<u8> {
             // Gate to the real target band: reject >= 28 (bin 30/31 = the SoC's
             // no-detection default, past the ~3 m stock range) AND < 5 (close-in
             // clutter / antenna coupling at ~0.5 m that the SoC's own tracker
-            // also discards). Confirmed noisy/bimodal on HW for the 2 m reflector.
+            // also discards). Confirmed noisy/bimodal on HW for the reflector.
             if (5..28).contains(&bin) {
                 sum += bin as u16;
                 count += 1;
@@ -110,6 +111,31 @@ pub fn detected_bin(buf_ptr: *const u8, len: usize) -> Option<u8> {
     } else {
         None
     }
+}
+
+/// Copy the newest *complete* `AA 30` frame (96 bytes) out of the circular DMA
+/// buffer into `out`, for the RTT ring. Scans backward from the DMA write
+/// cursor (`dma_pos`) so the returned frame is fully written (not straddling
+/// the cursor) and is the most recent one. Returns false if none found.
+/// Volatile reads (DMA writes concurrently).
+pub fn newest_frame(buf_ptr: *const u8, len: usize, out: &mut [u8; crate::rtt::FRAME_COPY]) -> bool {
+    let rd8 = |i: usize| unsafe { core::ptr::read_volatile(buf_ptr.add(i % len)) };
+    let head = dma_pos(len);
+    // The newest complete frame ends just behind the cursor: scan increasing
+    // look-back `d` (>= FRAME_COPY so a whole frame fits behind the cursor) and
+    // take the first `AA 30`.
+    let mut d = crate::rtt::FRAME_COPY;
+    while d < len {
+        let idx = (head + len - d) % len;
+        if rd8(idx) == 0xAA && rd8(idx + 1) == 0x30 {
+            for (k, b) in out.iter_mut().enumerate() {
+                *b = rd8(idx + k);
+            }
+            return true;
+        }
+        d += 1;
+    }
+    false
 }
 
 /// Extract the 43 range-profile samples (bytes [10:95], BE int16) from the most

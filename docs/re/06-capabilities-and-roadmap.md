@@ -35,19 +35,60 @@ taking the peak bin, instead of using the SoC's noisy `+0x6a` field. On HW the
 DFT bin is **dead-stable (std 0.00)** where the SoC field was std 4.8 + dropouts
 — so we get a rock-steady reading with **no multi-target tracker** (`FUN_08004fa0`
 is not needed). `dsp.rs`: fixed-point N=43 DFT, ~900 MACs/frame.
-- @2 m target: **bin 11, distance = 200 cm on every reading.**
+**Bin→range CALIBRATED on HW (2026‑11‑14) — overturns the earlier guess.**
+A corner reflector measured at three marked ranges (0.699 m / 1.283 m / 2.743 m
+= 27.5″ / 50.5″ / 9 ft) lands on bins 14 / 11 / 3. So **higher bin = CLOSER**,
+and a linear fit gives:
 
-Remaining polish (operator help):
-1. **Distance sweep** to confirm the bin→cm slope is linear and pin the absolute
-   scale (currently anchored on the single bin 11 = 2 m ⇒ 18.2 cm/bin; the chirp
-   config sets the true value, so re-derive it per C-experiment). Just log
-   `DBG_REPORT.bin` at marked ranges.
-2. **Presence threshold** on the DFT magnitude (`DBG_REPORT[3]`) to emit type-0
-   when no target — read the mag with the scene empty to pick the cutoff.
-3. Optional sub-bin interpolation (parabolic peak fit) for <18 cm precision.
+> **R[m] ≈ 3.2908 − 0.1825·bin**   (coarse, single‑frame)
+
+The old "bin 11 = 2 m ⇒ 18.2 cm/bin ascending" was wrong in **both scale and
+sign**. The from‑source firmware readout (`main.rs` `DBG_REPORT[1]`) now uses this
+formula; bin 11 reads **128 cm**, not 200 cm. (This coarse slope shifts with the
+chirp config — re‑derive per C‑experiment — but the absolute sweep below is
+config‑independent.)
+
+Polish done:
+- **Sub‑bin interpolation** (parabolic peak fit) is in `dsp.rs` — sub‑cm bin
+  precision.
+- **Presence**: `DBG_REPORT[3]` carries the peak DFT magnitude; threshold it for
+  type‑0 (empty‑scene mag sets the cutoff).
 
 This DFT path is also the enabler for C and D below: we now have the **full
 range profile** in firmware, not just a single bin.
+
+## B+ — stepped‑frequency ABSOLUTE range  ✅ SOLVED (config‑independent)
+The coarse bin→range above is a *relative* scale that moves with the chirp. For
+an **absolute**, chirp‑independent range we exploit reg **`0x70` (dev 0x20) =
+the S3KM111L VCO fine‑tune DAC** (characterised on HW: **3583 Hz/count**; it
+locks only on a discrete comb of codes ~500 wide every 1000 counts — good codes
+`{12000,12250,13000,13250,14000,14250,15000,15250}`; off‑comb codes collapse SNR
+or show a fixed bin‑13 TX→RX leakage tone).
+
+At each lock the **beat phase at the target bin ramps linearly with the carrier
+code**; the slope is proportional to absolute range with **no λ/2 ambiguity**:
+
+> **R[m] = slope[rad/count] × 6658.2 + 0.0662**   (R_sys ≈ −6.6 cm cable/delay)
+
+Calibrated against the same three reflector positions — all fell on
+`slope = 1.502e‑4 · R` with **±3 mm** residual. Because the radar sees much
+static room clutter brighter than a far reflector, the peak bin ≠ the target, so
+a bin's stepped range is cross‑checked against its coarse `3.29 − 0.183·bin`
+(±0.4 m) to reject ambiguous/multi‑scatterer bins; the operator can also pin a
+bin. PLL relock after a `0x70` write is < 1 frame (~15 ms); fixed‑carrier phase
+is coherence R = 1.0000, frame‑to‑frame jitter 0.014 rad ≈ 14 µm.
+
+### Firmware carrier‑hop (`RADAR_RTT v2`) — continuous, dropout‑free
+Driving the `0x70` hop from the **host** over SWD destabilised the (parasitic‑
+power) CMSIS‑DAP link within seconds. The fix is to hop **in firmware**: the MCU
+cycles the comb itself, discards a settle frame, and **tags each pushed record
+with the carrier index** (record header is now epoch u16 + seq u8 + carrier u8;
+the host reads the 16‑byte magic to pick the `buf` offset, `_v2` ⇒ 0x70). The
+host then reads the *normal‑rate* stream, groups frames by carrier tag, and
+re‑fits the stepped‑freq slope every frame — **absolute range with zero extra
+SWD traffic**. Validated: **60 s soak, 0 link respawns, ~9.6 Hz range updates,
+max gap 161 ms, std 9 mm** at 0.93 m. Config lives in the `hop_*` fields of the
+`RADAR_RTT` control block; the web workspace exposes it as the "HW hop" button.
 
 ## C — chirp / FMCW parameter experiments (range & precision)
 The S3KM111L is undocumented, so register meanings are physics-grounded
@@ -80,8 +121,12 @@ ADC Nyquist).
    targets resolve (precision) and whether a far target appears (range).
 5. Lower the far STC thresholds (`0x2a–0x2f`) + verify the original 12 ft target
    now detects — the original range-extension goal.
-`detected_bin`'s gate (`5..28`) and the 18.2 cm/bin scale are assumptions that
-change with the chirp config — re-derive per experiment from the SDR + a sweep.
+`detected_bin`'s gate (`5..28`) is a chirp‑config assumption — re‑derive per
+experiment from the SDR + a sweep. The bin→range scale is now calibrated
+(`R ≈ 3.29 − 0.183·bin`, see B) but still config‑dependent; the stepped‑freq
+sweep (B+) gives the config‑independent absolute. **`0x70` is now fully
+characterised** (VCO fine‑tune, 3583 Hz/count, discrete lock comb) — the first
+of the chirp‑group registers nailed down on HW, and the basis of B+.
 
 ## D — two-module bistatic → synthetic aperture
 **Hard truths first.** The S3KM111L is an *integrated* FMCW TX+RX SoC; true
@@ -107,10 +152,27 @@ only get the SoC's processed range bins, not coherent raw I/Q across modules.
    Capturing all 4 channels' samples gives a small real aperture *for free* (no
    second module) — angle/azimuth estimation, a stepping stone to SAR.
 
-**Recommended order:** finish B (sweep + light tracker) → C experiment #1–3 to
-master the chirp (and get the SDR map) → D step 3 (4-RX aperture, no new HW) →
-D step 1 (monostatic SAR on a track) → D step 2 (bistatic, only if the board
-exposes clock+trigger).
+4. **HLK‑LD2450 — angle/aperture for free (new HW on the bench, 2026‑11‑14).**
+   A Hi‑Link **LD2450** (24 GHz, 250 MHz BW, FMCW) is a sibling module built on
+   the *same architecture family* as the Rd‑03E: an AIoT mmwave radar SoC + a
+   GD32‑class host MCU (castellated pads label `PA9`/`TX`/`RX`, GD32 USART0
+   naming; UART out at 256000 baud, plus USB `DM/DP`). Crucially it carries a
+   **1 TX + 2 RX microstrip antenna** array (the user's "3 antenna ports") and
+   already does 2‑D multi‑target tracking: it reports up to **3 targets' X/Y +
+   speed**, FoV azimuth ±60° / pitch ±35°. The two RX give azimuth **angle‑of‑
+   arrival** (phase/amplitude monopulse) — i.e. *receive digital beamforming /
+   DoA*, not steerable phased‑array TX. That is exactly the angle dimension D
+   wants, on one coherent board with a shared clock — so RE'ing the LD2450's
+   per‑RX raw frames is a faster path to real‑aperture angle than the Rd‑03E's
+   4‑RX capture, and a far easier stepping stone than two‑module bistatic.
+   *Next step if pursued:* dump its firmware over SWD and map its SPI/UART frame
+   the same way we did the Rd‑03E (`docs/re/01`–`05`); the control model is
+   likely near‑identical.
+
+**Recommended order:** finish B (sweep + light tracker) ✅ → C experiment #1–3 to
+master the chirp (and get the SDR map) → **LD2450 angle path (above)** or D step 3
+(4‑RX aperture, no new HW) → D step 1 (monostatic SAR on a track) → D step 2
+(bistatic, only if the board exposes clock+trigger).
 
 ## Open items / to verify with the operator
 - Distance sweep for B calibration and to pin bin→cm.

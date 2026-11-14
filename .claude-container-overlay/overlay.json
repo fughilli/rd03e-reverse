@@ -1,5 +1,16 @@
 {
-  "capabilities": ["NET_ADMIN"],
-  "devices": ["/dev/net/tun"],
-  "env": ["TS_AUTHKEY", "TS_HOSTNAME=claude-rd03e"]
+  "capabilities": [
+    "NET_ADMIN"
+  ],
+  "devices": [
+    "/dev/net/tun"
+  ],
+  "env": [
+    "TS_AUTHKEY",
+    "TS_HOSTNAME=claude-rd03e"
+  ],
+  "services": {
+    "swd": 8099,
+    "radar": 8091
+  }
 }
