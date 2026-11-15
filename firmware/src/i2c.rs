@@ -26,18 +26,27 @@ const ACKEN: u32 = 1 << 10;
 
 #[inline]
 fn wait_stat0(flag: u32) {
-    while rd(I2C0 + I2C_STAT0) & flag == 0 {}
+    // Bounded wait: on a bus fault we return rather than hang forever, so the
+    // firmware reaches the data path / report loop and stays debuggable over SWD.
+    // A `for` over a fixed range keeps a trip count the optimizer can't drop —
+    // the earlier `while { n += 1; if n > LIMIT break }` form was optimized into
+    // an *infinite* wait (confirmed on HW: PC stuck in wait_stat0(ADDSEND) when
+    // the S3KM111L didn't ACK its I2C address).
+    for _ in 0..200_000u32 {
+        if rd(I2C0 + I2C_STAT0) & flag != 0 {
+            return;
+        }
+    }
 }
 
-/// Bring up I2C0 as a master. TODO: exact Fast-mode-Plus timing from the RE.
+/// Bring up I2C0 as a master. Timing values read live from the running vendor
+/// firmware over SWD: CTL1=0x48 (I2CCLK=72 MHz), CKCFG=0x8018 (Fast mode,
+/// CLKC=24), RT=0x09.
 pub fn init() {
-    // Assume PCLK1 is in MHz for the frequency field; placeholder = 54 MHz.
-    let pclk1_mhz: u32 = 54;
     wr(I2C0 + I2C_CTL0, 0); // disable while configuring
-    modify(I2C0 + I2C_CTL1, 0x3F, pclk1_mhz & 0x3F);
-    // Fast mode (FAST=1), CLKC for ~1 MHz. Placeholder — recompute from pclk1.
-    wr(I2C0 + I2C_CKCFG, (1 << 15) | 0x0004);
-    wr(I2C0 + I2C_RT, pclk1_mhz + 1);
+    wr(I2C0 + I2C_CTL1, 72); // I2CCLK = 72 MHz (peripheral clock)
+    wr(I2C0 + I2C_CKCFG, 0x8018); // FAST=1, CLKC=0x18 -> ~1 MHz
+    wr(I2C0 + I2C_RT, 0x09);
     modify(I2C0 + I2C_CTL0, 0, I2CEN | ACKEN);
 }
 

@@ -10,10 +10,11 @@ name = "rd03e-fw"
 test = false
 bench = false
 
+# No external crates: the Cortex-M23 runtime (vector table, reset handler,
+# panic handler, delay) lives in src/rt.rs so the firmware builds from prebuilt
+# `core` alone — no cortex-m / cortex-m-rt / panic-halt, no crate_universe.
+# This is what lets fughilli/embedded build it with rules_rust and nothing else.
 [dependencies]
-cortex-m = "0.7.7"
-cortex-m-rt = "0.7.5"
-panic-halt = "0.2.0"
 
 [profile.release]
 opt-level = "s"     # 64 KB flash; favor size
@@ -21,3 +22,4 @@ lto = true
 codegen-units = 1
 debug = true        # symbols stay in the ELF, stripped from the .bin
 overflow-checks = false
+panic = "abort"     # no unwinder on bare metal; rt.rs provides the handler

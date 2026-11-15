@@ -22,20 +22,32 @@ The firmware is a functionally-complete thin host. Remaining work is
 *interpretation* (result-register field semantics, chirp-param meanings, SPI0
 frame format), not structural RE — see `../docs/re/03-architecture.md`.
 
-## Build
+The firmware is **dependency-free**: the Cortex-M23 runtime (vector table, reset
+handler, panic handler, delay) lives in [`src/rt.rs`](src/rt.rs) and the memory
+map in [`link.x`](link.x), so it links against prebuilt `core` alone — no
+`cortex-m` / `cortex-m-rt` / `panic-halt`. That is what lets Bazel build it with
+[`fughilli/embedded`](https://github.com/fughilli/embedded) and nothing else.
+
+## Build — Bazel (primary)
+
+This directory is a standalone bzlmod module; the GD32E230 (Cortex-M23) board
+platform, arm-none-eabi cc_toolchain, and `thumbv8m.base` Rust toolchain all come
+from `@firmware` (fughilli/embedded):
+
+```sh
+bazel build //:rd03e_fw_bin        # -> bazel-bin/rd03e_fw_bin.bin  (raw flash image)
+bazel build //:rd03e_fw            # the ELF, if you want symbols
+```
+
+## Build — cargo (also works)
 
 Cortex-M23 target is `thumbv8m.base-none-eabi`:
 
 ```sh
 rustup target add thumbv8m.base-none-eabi
 cargo build --release
-# -> target/thumbv8m.base-none-eabi/release/rd03e-fw  (ELF; ~1.6 KB text)
-```
-
-A raw image for comparison against the vendor `.hex`:
-
-```sh
-cargo objcopy --release -- -O binary rd03e-fw.bin     # needs cargo-binutils + llvm-tools
+# -> target/thumbv8m.base-none-eabi/release/rd03e-fw  (ELF)
+cargo objcopy --release -- -O binary rd03e-fw.bin     # raw image; needs cargo-binutils
 ```
 
 ## Flash (SWD, J3 header)
@@ -63,5 +75,9 @@ src/i2c.rs        I2C0 master (ported vendor transaction flow)
 src/s3km111l.rs   radar driver: read/write reg + table replay (dev 0x40/0x44)
 src/datapath.rs   SPI0 + DMA CH0 radar-sample stream
 src/usart.rs      USART1 host UART
+src/rt.rs         in-crate Cortex-M23 runtime (vectors, reset, panic, delay)
 src/main.rs       bring-up in the vendor's order, then your algorithm loop
+link.x            self-contained linker script (vector placement + memory map)
+BUILD.bazel       rust_binary + firmware_binary(board = "gd32e230")
+MODULE.bazel      bzlmod: pins @firmware + registers the thumbv8m.base toolchain
 ```

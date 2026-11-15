@@ -30,6 +30,10 @@ pub const I2C0: u32 = 0x4000_5400;
 pub const SPI0: u32 = 0x4001_3000;
 pub const USART1: u32 = 0x4000_4400;
 pub const TIMER2: u32 = 0x4000_0400;
+pub const FMC: u32 = 0x4002_2000;
+
+// FMC register offsets.
+pub const FMC_WS: u32 = 0x00; // wait-state control (WSCNT + prefetch)
 
 // RCU register offsets.
 pub const RCU_CTL: u32 = 0x00;
@@ -67,3 +71,8 @@ pub const DMA_CH0CTL: u32 = 0x08;
 pub const DMA_CH0CNT: u32 = 0x0C;
 pub const DMA_CH0PADDR: u32 = 0x10;
 pub const DMA_CH0MADDR: u32 = 0x14;
+// Channel 1 = SPI0_RX (confirmed live: PADDR=SPI0_DATA, CTL=0x20a7 circular).
+pub const DMA_CH1CTL: u32 = 0x1C;
+pub const DMA_CH1CNT: u32 = 0x20;
+pub const DMA_CH1PADDR: u32 = 0x24;
+pub const DMA_CH1MADDR: u32 = 0x28;

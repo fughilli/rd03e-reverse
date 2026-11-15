@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rd-03E Radar Workspace</title>
+<style>
+  :root{
+    --bg:#0c0f14; --panel:#141a22; --panel2:#1b232e; --ink:#e7eef7; --mut:#8aa0b6;
+    --line:#2a3644; --accent:#39d0d8; --accent2:#f5a742; --hot:#ff5c7a; --ok:#54d98c;
+    --grid:#1e2834;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);overflow:hidden;
+    display:flex;flex-direction:column;
+    font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{display:flex;align-items:center;gap:10px;padding:7px 12px;flex-wrap:wrap;
+    background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}
+  header h1{font-size:13px;margin:0;letter-spacing:.5px;font-weight:600;white-space:nowrap}
+  .pill{padding:2px 7px;border-radius:9px;background:var(--panel2);color:var(--mut);
+    border:1px solid var(--line);font-size:11px;white-space:nowrap}
+  .pill b{color:var(--ink);font-weight:600}
+  #conn.ok{color:var(--ok);border-color:#285}
+  #conn.bad{color:var(--hot);border-color:#733}
+  main{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:228px 1fr;
+    gap:9px;padding:9px;overflow:hidden}
+  .side{display:flex;flex-direction:column;gap:9px;min-height:0;overflow-y:auto}
+  .content{display:grid;min-height:0;gap:9px;
+    grid-template-rows:minmax(0,1fr) minmax(0,1.05fr) minmax(0,1fr) minmax(0,0.8fr)}
+  .top{display:grid;grid-template-columns:1fr 1fr;gap:9px;min-height:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:7px;
+    padding:7px 8px;display:flex;flex-direction:column;min-height:0}
+  .card h2{margin:0 0 5px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;
+    color:var(--mut);font-weight:600;flex:0 0 auto}
+  canvas{flex:1 1 auto;min-height:0;width:100%;background:var(--panel2);border-radius:4px;display:block}
+  label{display:block;color:var(--mut);margin:6px 0 2px;font-size:10px}
+  input,select,button{font:inherit;background:var(--panel2);color:var(--ink);
+    border:1px solid var(--line);border-radius:4px;padding:4px 6px}
+  input{width:100%}
+  button{cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.go{background:#143;border-color:#285;color:var(--ok)}
+  button.warn{background:#331;border-color:#852;color:var(--accent2)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+  .stat{display:flex;justify-content:space-between;padding:1px 0;border-bottom:1px dotted var(--grid)}
+  .stat b{color:var(--accent)}
+  .reglist{max-height:104px;overflow:auto;margin-top:5px}
+  .reglist button{width:100%;text-align:left;margin-bottom:3px;font-size:10px;padding:3px 5px}
+  small{color:var(--mut);font-size:10px}
+  .epoch-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent2)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Rd-03E · RADAR</h1>
+  <span id="conn" class="pill bad">connecting…</span>
+  <span class="pill">fps <b id="fps">–</b></span>
+  <span class="pill">epoch <b id="epoch">–</b> <span class="epoch-dot" id="edot"></span></span>
+  <span class="pill">drops <b id="drops">0</b></span>
+  <span class="pill">decim <b id="decimv">–</b></span>
+  <span class="pill">peak <b id="pbin">–</b> · <b id="pcm">–</b>cm</span>
+  <span class="pill">mag <b id="pmag">–</b></span>
+  <span class="pill">breath <b id="breath">—</b></span>
+  <span class="pill" style="border-color:#285">abs-range <b id="absr" style="color:var(--accent)">–</b></span>
+</header>
+<main>
+  <div class="side">
+    <div class="card" style="flex:0 0 auto">
+      <h2>Stream</h2>
+      <label>Decimation — <span id="decLbl">20</span> (1 = every frame)</label>
+      <input type="range" id="dec" min="1" max="200" value="20">
+      <div class="grid2" style="margin-top:7px">
+        <button id="flush" class="warn">Flush epoch</button>
+        <button id="pause">Pause</button>
+      </div>
+    </div>
+    <div class="card" style="flex:0 0 auto">
+      <h2>FMCW config · live write</h2>
+      <small>Writes S3KM111L reg (I²C), bumps epoch.</small>
+      <div class="grid3" style="margin-top:5px">
+        <div><label>dev</label>
+          <select id="dev"><option value="32">0x20</option><option value="34">0x22</option></select></div>
+        <div><label>reg hex</label><input id="reg" value="44"></div>
+        <div><label>val hex</label><input id="val" value="0020"></div>
+      </div>
+      <button id="write" class="go" style="width:100%;margin-top:6px">Write reg</button>
+      <div class="reglist" id="presets"></div>
+    </div>
+    <div class="card" style="flex:0 0 auto">
+      <h2>Absolute range · stepped-freq</h2>
+      <small>Cycles carrier comb (0x70) &amp; fits phase ramp → true range, no λ/2 wrap. k=3583 Hz/ct.</small>
+      <div class="grid2" style="margin-top:6px">
+        <button id="sweep" class="go">Sweep</button>
+        <button id="track">Track 65Hz</button>
+      </div>
+      <button id="hop" style="width:100%;margin-top:5px" title="MCU hops the carrier itself and tags each frame — continuous absolute range, no SWD stall">HW hop (firmware)</button>
+      <div id="absbig" style="font-size:23px;font-weight:600;margin:7px 0 1px;color:var(--accent)">–</div>
+      <div id="abssub"><small>run a sweep</small></div>
+      <div class="reglist" id="abstargets" style="max-height:118px;margin-top:4px"></div>
+    </div>
+    <div class="card" style="flex:0 0 auto">
+      <h2>Readout</h2>
+      <div class="stat"><span>up_wr</span><b id="upwr">–</b></div>
+      <div class="stat"><span>phase@peak</span><b id="phase">–</b></div>
+      <div class="stat"><span>frames seen</span><b id="nframes">0</b></div>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="top">
+      <div class="card"><h2>Raw beat samples (time)</h2><canvas id="scope"></canvas></div>
+      <div class="card"><h2>Range profile |FFT|</h2><canvas id="prof"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Absolute-range tracker · stepped-frequency
+        <span id="trk_state" style="color:var(--mut);text-transform:none;letter-spacing:0">— idle (Sweep / Track)</span>
+      </h2>
+      <canvas id="trk"></canvas>
+    </div>
+    <div class="card"><h2>Range–time waterfall</h2><canvas id="fall"></canvas></div>
+    <div class="card"><h2>Slow-time phase @ peak bin · micro-motion / breathing</h2><canvas id="slow"></canvas></div>
+  </div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

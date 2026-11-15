@@ -1,0 +1,93 @@
+"""From-source GD32E230 firmware for the Ai-Thinker Rd-03E, built with Bazel.
+
+A standalone bare-metal **Rust binary** (`//:rd03e_fw`) packaged into a flashable
+`.bin` (`//:rd03e_fw_bin`) by @firmware's `firmware_binary` rule. It is
+*dependency-free*: the Cortex-M23 runtime (vector table, reset handler, panic
+handler, delay) lives in `src/rt.rs`, so it links against prebuilt `core` alone —
+no cortex-m-rt / cortex-m / panic-halt, no crate_universe. All the GD32E230
+(Cortex-M23 = thumbv8m.base) build support — the board platform, the arm-none-eabi
+cc_toolchain, and the Rust target toolchain — comes from github.com/fughilli/embedded
+(bzlmod module `firmware`). Flash with the HITL rig flow (docs/re) or pyOCD.
+
+    bazel build //:rd03e_fw_bin        # -> bazel-bin/rd03e_fw_bin.bin
+"""
+
+module(
+    name = "rd03e_firmware",
+    version = "0.0.0",
+    compatibility_level = 1,
+)
+
+# @rules_rust so this BUILD can load rust_binary. Match embedded's pin so the
+# module graph resolves to one rules_rust version.
+bazel_dep(name = "rules_rust", version = "0.71.3")
+
+# @platforms: referenced directly by the repository_set target_compatible_with
+# labels (@platforms//os:none) below. Match embedded's pin.
+bazel_dep(name = "platforms", version = "1.1.0")
+
+# The embedded firmware infra: the gd32e230 board platform + Cortex-M23
+# cc_toolchain + thumbv8m.base Rust toolchain + the firmware_binary packager.
+bazel_dep(name = "firmware", version = "0.0.0")
+
+git_override(
+    module_name = "firmware",
+    remote = "https://github.com/fughilli/embedded",
+    # Squash-merge of fughilli/embedded#11 (Cortex-M23 / GD32E230 support).
+    commit = "a7e27b8d21815d64cb75aa85ccffaf9631088f88",
+)
+
+# ---------------------------------------------------------------------------
+# Rust toolchains. rules_rust processes toolchain config (incl. repository_set)
+# ONLY from the root module, so the GD32E230 target toolchain is registered here
+# — against @firmware's gd32e230 board/cc_toolchain — not in @firmware itself.
+# ---------------------------------------------------------------------------
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+
+# Host tools (rustc/cargo) at the pin @firmware uses, so the repository_set below
+# shares one host rustc.
+rust.toolchain(
+    edition = "2021",
+    versions = ["1.85.0"],
+)
+
+# GD32E230 = Cortex-M23 = `thumbv8m.base-none-eabi`. Not in rules_rust 0.71's
+# builtin triple table, so `extra_target_triples` can't add it — a custom
+# repository_set per exec host does (same escape hatch Splanc uses for the P4).
+# Board-constrained (NOT cpu) so it never collides with `thumbv8m.main`
+# (Cortex-M33), which is [armv8-m, none] — see @firmware//platforms:gd32e230.
+# One set per exec host so it builds on a Linux container (aarch64 / x86_64) and
+# macOS (aarch64). repository_set toolchains fold into @rust_toolchains//:all.
+rust.repository_set(
+    name = "rust_cm23_linux_arm64",
+    exec_triple = "aarch64-unknown-linux-gnu",
+    target_triple = "thumbv8m.base-none-eabi",
+    target_compatible_with = [
+        "@platforms//os:none",
+        "@firmware//platforms:gd32e230_board",
+    ],
+    versions = ["1.85.0"],
+)
+rust.repository_set(
+    name = "rust_cm23_linux_x64",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    target_triple = "thumbv8m.base-none-eabi",
+    target_compatible_with = [
+        "@platforms//os:none",
+        "@firmware//platforms:gd32e230_board",
+    ],
+    versions = ["1.85.0"],
+)
+rust.repository_set(
+    name = "rust_cm23_mac_arm64",
+    exec_triple = "aarch64-apple-darwin",
+    target_triple = "thumbv8m.base-none-eabi",
+    target_compatible_with = [
+        "@platforms//os:none",
+        "@firmware//platforms:gd32e230_board",
+    ],
+    versions = ["1.85.0"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")

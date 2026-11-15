@@ -31,10 +31,15 @@ do {                    # --- infinite poll/report loop ---
 - **Report — `FUN_08001418`:** when a "frame ready" flag (`buf+0x82`) is set,
   sends a **0x40 = 64-byte** report frame (`FUN_08001450`) and clears the flag.
 
-Result values come from **polling S3KM111L registers over I2C** — the host
-accessors read regs `0x01` (status), `0x04`, `0x05`, `0x44`
-(`FUN_08004b7c/4c60/4c1c/4c36`). The `0x20..0x2f` CFAR/threshold curve and the
-chirp configuration all live *in the SoC* (they are I2C register writes), so
+**Correction (HITL‑measured, see `05-calibration.md`).** Result values do *not*
+come from polling I2C registers. Regs `0x01/0x04/0x05/0x44` are **config**
+registers — reading them back returns exactly the boot‑table write values
+(verified on HW), and the "result accessors" `FUN_08004c1c`/`FUN_08004c36`
+return the constants `0x40`/`0x20`. The actual target data arrives as a framed
+byte stream over **SPI0 + DMA** (`FUN_08002294`→`FUN_08004ecc`), parsed on the
+GD32 by the 9‑state machine `FUN_0800207c`; `FUN_08002450` scales the parsed
+range and emits it. The `0x20..0x2f` CFAR/threshold curve and the chirp
+configuration still live *in the SoC* (they are I2C register writes), so
 detection/thresholding is the SoC's job.
 
 ## Host UART protocol (USART1 / J2)
@@ -44,10 +49,12 @@ Standard Ai-Thinker Rd-03E framing (delimiters confirmed in the `.data` image):
 | Frame | Header | Footer | Body |
 | --- | --- | --- | --- |
 | Config command | `FD FC FB FA` | `04 03 02 01` | `len(2 LE) | cmd(2 LE) | data` |
-| Report / data | `F4 F3 F2 F1` | `F8 F7 F6 F5` | `len(2 LE) | payload` |
+| Report / data | `55 55 AA AA` | *(none)* | `type(1) | value16(2 LE)` — 7 bytes |
 
-Command IDs and the ranging report payload are in the vendor user manuals
-(`09-handoff.md`). Implemented in `firmware/src/protocol.rs`.
+The config delimiters are confirmed in the `.data` image. The **report framing
+`55 55 AA AA` was recovered on hardware** (`05-calibration.md`); the manuals'
+`F4 F3 F2 F1`/`F8 F7 F6 F5` delimiters are **not** in build 2268's binary.
+Implemented in `firmware/src/protocol.rs`.
 
 ## What this means for new radar algorithms
 
@@ -64,7 +71,10 @@ Two surfaces, both now open from source:
 
 ## Remaining interpretation (not structural)
 
-- Field semantics of the result registers (distance encoding, target count) and
-  the differing chirp registers — map against radar physics + the Rd-01 notes.
-- SPI0 frame format/direction (`02-bus.md`).
+- SPI0 frame **byte protocol** decoded in `05-calibration.md` (sync `0xAA`,
+  per‑channel struct stride `0x72`, range at `+0x6a`/`+0x6c`); the exact
+  nibble‑coding of the sub‑modes (`*DAT_080028e4`) is ported but not yet
+  HW‑validated against a live capture.
+- SPI0 electrical direction/role (master vs slave) — to read live via SWD.
+- The differing chirp registers (`0x43..0x72`) — map against radar physics.
 - The per-mode reconfig tables (`FUN_08001300`, scatter entry 2).

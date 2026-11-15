@@ -27,6 +27,11 @@ pub fn set_af(port: u32, pin: u32, af: u32) {
 /// for these functions (AF1 for I2C0 on PB6/7, AF0 for SPI0 on PA4/5/7);
 /// confirm against the datasheet's AF table.
 pub fn init_pins() {
+    // USART1 host UART on GPIOA: PA2 TX, PA3 RX (AF1) — the J2 OT1/RX pins.
+    // Confirmed from the running vendor firmware (GPIOA CTL has PA2/PA3 in AF).
+    set_af(GPIOA, 2, 1);
+    set_af(GPIOA, 3, 1);
+
     // I2C0 on GPIOB: PB6 SCL, PB7 SDA (AF1).
     set_af(GPIOB, 6, 1);
     set_af(GPIOB, 7, 1);
@@ -41,4 +46,18 @@ pub fn init_pins() {
     set_af(GPIOA, 7, 0);
     // NOTE: PA6/MISO intentionally left unmuxed, as in build 2268 — see the
     // SPI0/DMA direction open question in docs/re/02-bus.md.
+
+    // S3KM111L enable/reset line: PA9 push-pull output, driven LOW. The vendor
+    // control-bus bring-up (FUN_08004b1c) configures PA9 as output (CTL=01,
+    // OMODE push-pull) and clears it via the bit-clear register. Without this
+    // the SoC is held off and never ACKs on I2C (STAT0 AERR). Confirmed on HW.
+    modify(GPIOA + GPIO_CTL, 0b11 << (9 * 2), 0b01 << (9 * 2)); // output
+    // OMODE bit9 = 0 (push-pull) is the reset default; drive the pin LOW.
+    wr(GPIOA + 0x28, 1 << 9); // BC register: PA9 = 0
+
+    // Second SoC control line: PA15 push-pull output, driven LOW. The vendor
+    // configures it in FUN_08004ae0; its live GPIOA CTL has PA15=output and
+    // OCTL=0. Without it the SoC still does not ACK on I2C (AERR). HW-confirmed.
+    modify(GPIOA + GPIO_CTL, 0b11 << (15 * 2), 0b01 << (15 * 2)); // output
+    wr(GPIOA + 0x28, 1 << 15); // BC register: PA15 = 0
 }
