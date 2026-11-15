@@ -2,7 +2,8 @@
 
 Synthesis of the from-source bring-up + the overnight exploration (2026-11-13).
 Scopes the three goals: **B** calibrated distance, **C** chirp-parameter
-experiments for range/precision, **D** two-module bistatic → synthetic aperture.
+experiments for range/precision, **D** distributed coherent aperture — a
+self-organizing, infrastructure-free radar network (updated 2026-11-15).
 
 ## What works from source today
 Our GD32 firmware (branch `firmware/from-source-bringup`, PR #1) is a complete
@@ -128,54 +129,185 @@ sweep (B+) gives the config‑independent absolute. **`0x70` is now fully
 characterised** (VCO fine‑tune, 3583 Hz/count, discrete lock comb) — the first
 of the chirp‑group registers nailed down on HW, and the basis of B+.
 
-## D — two-module bistatic → synthetic aperture
-**Hard truths first.** The S3KM111L is an *integrated* FMCW TX+RX SoC; true
-coherent bistatic reception of module A's chirp by module B needs: (a) B in
-RX-only mode locked to A's ramp, (b) a **shared reference clock** (the two
-modules have independent crystals → ppm frequency offset → phase decorrelation
-in µs), and (c) a **trigger line** so B's ramp starts with A's. Without a shared
-10/40 MHz reference + trigger, coherent bistatic SAR is not achievable, and we
-only get the SoC's processed range bins, not coherent raw I/Q across modules.
+## D — distributed coherent aperture (self-organizing radar network)
+**Vision (2026‑11‑15 design pass).** The end goal is not a fixed two‑module rig
+but a **self‑organizing network**: throw N nodes into a scene and have them
+self‑localize, self‑synchronize, and cooperatively measure scatterers (people)
+with **no central processor, no infrastructure anchors, and no placed
+reference target** — robust to the nodes themselves being mobile. Each node is
+both a 24 GHz FMCW radar *and* a radio (UWB + WiFi + BLE it controls to the
+PHY), and that dual role is the key enabler: the nodes range and phase‑reference
+to **each other**, so the network is self‑referential.
 
-**Realistic staged path:**
-1. **Monostatic SAR first (no two-module sync).** One module moved along a known
-   track (rail/robot), collecting frames + positions. The frames already carry
-   the **raw BE-int16 samples** (the a5.. payload) — phase-bearing. Back-project
-   offline → a synthetic-aperture image. This is a proven technique and sidesteps
-   the sync problem entirely; it validates the sample→image pipeline.
-2. **Shared-clock bistatic.** If the board exposes the SoC reference clock and a
-   chirp-trigger/sync pin, feed A's reference + trigger to B (RX-only). Then B's
-   frames are coherent with A → bistatic range/Doppler. Needs hardware probing
-   of the module (find REF_CLK / SYNC pads) — a board-level investigation.
-3. **MIMO/aperture via the 4 RX channels.** The SoC already has 4 RX channels
-   (gains `0x61–0x64`); the frame is per-channel (stride 0x72 in the struct).
-   Capturing all 4 channels' samples gives a small real aperture *for free* (no
-   second module) — angle/azimuth estimation, a stepping stone to SAR.
+### D.0 — the three sync requirements (they differ by ~1000×)
+"Time sync" is really three separate problems at f_c ≈ 24.1 GHz (λ ≈ 12.4 mm,
+B ≈ 250 MHz → range bin ΔR = c/2B ≈ 0.6 m):
 
-4. **HLK‑LD2450 — angle/aperture for free (new HW on the bench, 2026‑11‑14).**
-   A Hi‑Link **LD2450** (24 GHz, 250 MHz BW, FMCW) is a sibling module built on
-   the *same architecture family* as the Rd‑03E: an AIoT mmwave radar SoC + a
-   GD32‑class host MCU (castellated pads label `PA9`/`TX`/`RX`, GD32 USART0
-   naming; UART out at 256000 baud, plus USB `DM/DP`). Crucially it carries a
-   **1 TX + 2 RX microstrip antenna** array (the user's "3 antenna ports") and
-   already does 2‑D multi‑target tracking: it reports up to **3 targets' X/Y +
-   speed**, FoV azimuth ±60° / pitch ±35°. The two RX give azimuth **angle‑of‑
-   arrival** (phase/amplitude monopulse) — i.e. *receive digital beamforming /
-   DoA*, not steerable phased‑array TX. That is exactly the angle dimension D
-   wants, on one coherent board with a shared clock — so RE'ing the LD2450's
-   per‑RX raw frames is a faster path to real‑aperture angle than the Rd‑03E's
-   4‑RX capture, and a far easier stepping stone than two‑module bistatic.
-   *Next step if pursued:* dump its firmware over SWD and map its SPI/UART frame
-   the same way we did the Rd‑03E (`docs/re/01`–`05`); the control model is
-   likely near‑identical.
+| Leg | Buys | Requirement | Met by |
+|---|---|---|---|
+| **Timing** (chirp‑start / ADC trigger) | range‑bin registration | ~1/10 bin → **~0.4 ns** | UWB TWR (0.1–1 ns), WiFi FTM (~1 ns) |
+| **Frequency** (syntonization) | no phase drift over the CPI | ε < **0.2 ppb**/10 ms (≈8 ppb per 250 µs chirp) | disciplined‑oscillator loop (D.2) |
+| **Phase** (carrier coherence) | **the aperture gain itself** | **< λ/20 ≈ 0.31 rad ≈ 2.1 ps ≈ 0.62 mm** | two‑way phase transfer + self‑cal (D.3) |
 
-**Recommended order:** finish B (sweep + light tracker) ✅ → C experiment #1–3 to
-master the chirp (and get the SDR map) → **LD2450 angle path (above)** or D step 3
-(4‑RX aperture, no new HW) → D step 1 (monostatic SAR on a track) → D step 2
-(bistatic, only if the board exposes clock+trigger).
+The gating leg is **carrier phase**: timing good enough for range (sub‑ns) is
+~5 whole carrier cycles of phase error. Two caveats soften the λ/20 wall:
+(1) it is a budget on the *residual jitter/drift of the relative phase* over one
+coherent interval — a **static** offset (cable, PLL start phase, fixed geometry)
+calibrates out once; (2) coherent gain rolls off as **exp(−σ_φ²)**, not a cliff —
+0.31 rad costs ~0.4 dB, 0.5 rad ~1 dB, 1 rad loses half the array.
+**Geometry = phase:** a node‑position error is indistinguishable from a phase
+error, so relative positions must be known to the **same λ/20 ≈ 0.6 mm**. UWB
+ranging gives *cm* (≈16 λ) — enough to *initialize* but not to image coherently;
+the sub‑mm closes only via phase self‑calibration (D.3).
+
+### D.1 — self-localization (relative geometry), no anchors
+Nodes measure pairwise range (UWB two‑way ranging) and ideally angle (the radar's
+own 2‑RX AoA, or UWB PDoA). Solve the constellation with **cooperative
+localization** — belief‑propagation / factor‑graph message passing (SPAWN‑style,
+Wymeersch et al.), which is inherently **distributed**: each node computes its own
+position belief from neighbor messages, no central solver. Recovered up to a
+rigid‑transform gauge (fine — self‑defined frame); range‑only flip ambiguity is
+killed by adding angle. Output accuracy is **cm**; this is the init, not the
+coherent geometry.
+
+### D.2 — frequency discipline / real-time oscillator trim (master-less)
+**Trim the reference, not the VCO.** Carrier, chirp slope, and ADC clock all
+derive from the 24 MHz crystal; disciplining the 24 MHz keeps all three coherent
+together. (The SoC VCO fine‑tune `0x70` is comb‑locked and only fixes the
+carrier — use it for *coarse* carrier co‑location, not fine discipline.)
+Actuators, best first: **VCTCXO swap** (±1–5 ppm pull, sub‑ppb via DAC; TCXO base
+keeps temp drift small so a small‑pull part also gives fine resolution) →
+**varactor‑pull the existing crystal** (lightest mod) → **DCXO** (I²C) →
+**DSP‑only** numerical NCO/resample correction (free given we already hold the raw
+frames). Steer from a ≥16‑bit DAC on the host MCU.
+
+**Coarse‑analog + fine‑digital split (the move that makes it easy):** don't ask
+the analog trim for 0.2 ppb. Its only job is to keep |Δf| small enough that the
+carrier phase doesn't wrap **within one chirp** → Δf·T_chirp < 0.5 → for 250 µs,
+**Δf < ~2 kHz ≈ 0.08 ppm** — a loose target any varactor/VCTCXO + slow PI loop
+holds through temperature. The DSP/self‑cal then removes the residual down to
+λ/20. Loop BW ~0.1–10 Hz (tracks temp/aging; the within‑CPI residual is
+autofocus's job). **Master‑less:** drive the setpoint by **consensus
+syntonization** (average‑consensus / pulse‑coupled‑oscillator coupling over the
+pairwise two‑way exchange) so there is no single master to lose when a node moves
+or drops — self‑healing.
+
+### D.3 — phase closure WITHOUT a placed reference (self-cal)
+The corner reflector is **not required** in the deployed system. Borrow
+**self‑calibration** from radio interferometry: with **≥3 nodes** the **closure
+phase** (sum of baseline phases around a triangle) is *independent of every
+per‑node phase/position error* — a calibration‑free observable. Iterate between a
+scene estimate and the per‑node phase/geometry (the VLBI "selfcal" loop); the
+radar analogs are **PGA / entropy‑ or sharpness‑minimizing autofocus** on
+**targets of opportunity** (static clutter — a wall corner, metal furniture). The
+solver *discovers* its reference instead of us placing one. ≥4 nodes →
+overdetermined → robust. **People are poor references** (extended, moving, low
+RCS): anchor self‑cal on **static clutter** and use **Doppler to separate movers
+(tracked) from the static set (calibrates phase)** — conveniently, the thing
+that's hard to image is the thing you don't need for calibration. Honest walls:
+the cm→0.6 mm gap closes only here; it's a **nonconvex** solve that can stall in a
+**sparse/featureless** scene, and it needs good init (UWB geometry + the two‑way
+pilot) — don't run it cold.
+
+### D.4 — mobility = tracking, not one-shot calibration
+Mobile nodes → time‑varying geometry and phase → run the whole estimator as a
+recursive **cooperative SLAM** (factor graph over time). Mobility **helps**
+(a moving node is itself a synthetic aperture; more baselines over time =
+structure‑from‑motion for the constellation) and **hurts** (motion must be known
+to λ/20 over the dwell, which ranging can't give). **Put an IMU on each node:**
+it supplies the sub‑mm *short‑term* motion within a CPI (drifts long‑term;
+radar/UWB corrects the drift). Net: mobility **bounds the coherent dwell**, so
+lean on short coherent CPIs + non‑coherent integration across them.
+
+### D.5 — distributed computation & the Tier‑1/Tier‑2 fork
+Every estimator above has a distributed form (BP localization, consensus sync,
+consensus/ADMM/information‑filter fusion). The real decision is the fusion tier:
+- **Tier 1 — cooperative, *non‑coherent* (robust, buildable now).** Self‑localize
+  (cm), each node images/SARs its own sector, share **detections/tracks** (tiny
+  bandwidth), fuse by consensus Kalman/information filter. **No inter‑node carrier
+  phase, no self‑cal, no reflector.** Robust to mobility and dropout, trivially
+  distributed. Gives multi‑view coverage, occlusion robustness, better *people
+  localization* — but **no coherent super‑aperture** (angular resolution = each
+  node's own aperture + motion‑SAR, not the big inter‑node baseline).
+- **Tier 2 — coherent distributed aperture (stretch).** Add D.2+D.3 so cross‑node
+  baselines combine coherently → fine cross‑range from the large baseline.
+  Nonconvex joint solve (scene × per‑node phase × sub‑mm position) and
+  **bandwidth‑heavy** (coherent combination wants raw complex data shared, not
+  just tracks).
+
+**Strategy:** ship Tier 1 as the robust baseline; make Tier 2 opt‑in where scene
+structure, node count (≥3–4), and link budget allow. They share the same
+self‑localization + sync front‑end.
+
+### D.6 — near-term stepping stones (single-board, no network sync)
+These validate the sample→image pipeline *before* any inter‑node coherence:
+1. **4‑RX real aperture for free.** The S3KM111L has 4 RX (gains `0x61–0x64`,
+   per‑channel frame stride 0x72). Capturing all 4 channels' samples gives a
+   small real aperture → angle/azimuth on **one** board.
+2. **HLK‑LD2450 — angle for free (on the bench).** Sibling 24 GHz / 250 MHz FMCW
+   module, same architecture family (AIoT mmwave SoC + GD32‑class host; `PA9`/
+   `TX`/`RX`/USB `DM`‑`DP` pads; 256000‑baud UART). **1 TX + 2 RX** microstrip
+   array, already does 2‑D multi‑target tracking (up to **3 targets' X/Y + speed**,
+   azimuth ±60° / pitch ±35°). The 2 RX give azimuth **AoA (receive digital
+   beamforming / DoA)** on one coherent, shared‑clock board — the easiest route to
+   real‑aperture angle. *SWD tap:* no debug pads are broken out; the exposed
+   `DM/DP` (USB) and `PA9` (USART0) are the host's **bootloader** interfaces — try
+   **USB DFU** (dump without soldering) or serial ISP first; true SWD = solder to
+   the host MCU's **PA13 (SWDIO)/PA14 (SWCLK)** or a via on those nets. A back‑side
+   **u.FL fed by a lumped matching network off a host‑IC pad** is present; lumped
+   discretes rule out 24 GHz, and two on‑board `24.000 MHz` crystals make it most
+   likely a **buffered ~24 MHz reference/sync port** (verify by scoping for a CW
+   tone) — i.e. a candidate **wired shared‑clock bootstrap** for D.2.
+3. **Monostatic SAR.** One module on a known track (rail/robot) + positions;
+   back‑project the raw BE‑int16 samples offline → a synthetic‑aperture image.
+   Proven, sync‑free, validates the pipeline.
+
+### D.7 — RF-only (UWB+WiFi+BLE) person tracking, WITHOUT the FMCW chips
+Device‑free (no tag on the person) sensing off the sync/backhaul radios — nearly
+free as **joint comms‑and‑sensing** (ISAC; 802.11bf is standardizing WiFi
+sensing). Feasibility is very modality‑dependent (range res = c/2B):
+- **UWB — the device‑free workhorse.** 500 MHz–1 GHz BW → **0.3–0.1 m** range
+  res. A person perturbs each link's **CIR**; background‑subtract the static
+  channel and multilaterate the moving reflection across a node mesh →
+  **~0.3–1 m** localization of 1–2 *moving* people. Some UWB parts do impulse
+  radar / respiration directly.
+- **WiFi CSI — augmentation.** 20/40/160 MHz → 7.5/3.75/~1 m res; good for
+  **presence, motion, counting, coarse zones, breathing** via ML on CSI, but
+  low‑res, environment/training‑dependent, poor multi‑person.
+- **BLE — presence only.** 2 MHz → ~75 m res (useless for device‑free ranging);
+  RSSI fluctuation detects gross motion. (BLE Channel Sounding is for *tagged*
+  device‑to‑device ranging, not device‑free.)
+
+**Verdict:** **Yes** for presence + counting + coarse (0.3–1 m) tracking of a
+*small number of moving* people, device‑free, led by the **UWB mesh** with WiFi
+CSI support. **No** for the fine, multi‑person, micro‑motion/vitals‑rich
+measurement the FMCW array gives — multi‑person separation and still‑person
+sensing are exactly where RF‑only degrades and FMCW wins. Best used as an
+**always‑on, low‑power cueing/coarse layer** that wakes and steers the FMCW nodes
+for fine measurement. **Tagged** tracking (person carries a UWB tag) is a
+different, far easier problem — 10–30 cm, trivially multi‑person by ID — if that
+assumption is ever acceptable.
+
+**Reflector's remaining role:** demoted to a **bring‑up/validation tool** — place
+it at a known spot to confirm the blind self‑cal (D.3) converges to the right
+answer, then remove it and verify the scene‑driven solve lands in the same place.
+
+**Recommended order:** B ✅ → C exp #1–3 (master the chirp + SDR map) → D.6
+single‑board angle (4‑RX or **LD2450**) → D.6 monostatic SAR → stand up D.7 RF‑only
+coarse tracking (cheap, uses radios already present) → D.1 cooperative
+localization → D.2 disciplined‑oscillator loop (bootstrap wired via the LD2450
+u.FL if it's the 24 MHz ref) → **Tier 1** non‑coherent network → **Tier 2**
+coherent self‑cal only where scene/nodes/link allow.
 
 ## Open items / to verify with the operator
-- Distance sweep for B calibration and to pin bin→cm.
 - SDR capture of the baseline chirp for the C register map.
-- Whether the module board exposes a reference-clock / chirp-sync pad (D).
 - The 12 ft range-extension test with lowered STC + widened chirp.
+- **LD2450 u.FL:** scope the center pin for a CW tone to confirm it's the
+  ~24 MHz reference (D.2 wired bootstrap) vs an IF/other; trace the net to the
+  host‑IC pad / crystal.
+- **LD2450 SWD/dump:** try USB DFU on `DM/DP` first; else serial ISP on `PA9`;
+  else solder SWD to host `PA13`/`PA14`. Confirm read‑protection (RDP) state.
+- **D.2 actuator choice:** VCTCXO swap vs varactor‑pull; which radio carries the
+  two‑way phase pilot; DAC resolution vs pull range.
+- Node count / scene assumptions for Tier‑2 self‑cal (≥3–4 nodes, static‑clutter
+  structure); IMU availability per node for mobility (D.4).
