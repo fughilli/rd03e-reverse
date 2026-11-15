@@ -279,6 +279,17 @@ function connect() {
       if (m.state === 'agent_up' && hopping) {
         setTimeout(() => { if (hopping) send({ t: 'hop', on: true, bin: pinnedBin }); }, 1500);
       }
+    } else if (m.t === 'modestate') {
+      // Bridge tells us which continuous mode is actually live (it re-engages the
+      // agent itself across respawns). Sync the UI without re-sending commands.
+      if (m.bin !== undefined && m.bin !== null) pinnedBin = m.bin;
+      setHop(m.mode === 'hop');
+      setTrack(m.mode === 'fasttrack');
+      if (m.decim !== undefined && m.decim !== null) {
+        const dec = document.getElementById('dec'), lbl = document.getElementById('decLbl');
+        if (dec) dec.value = m.decim;
+        if (lbl) lbl.textContent = m.decim;
+      }
     }
   };
 }

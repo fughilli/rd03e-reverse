@@ -43,6 +43,36 @@ clients = set()          # set of asyncio.StreamWriter for connected WS clients
 agent_stdin = None       # current agent process stdin (StreamWriter) or None
 last_ready = None        # cache the most recent {"t":"ready"} for new clients
 last_status = None
+# Sticky agent mode: the SWD link periodically hangs and the agent is respawned
+# as a fresh process in IDLE mode, silently dropping whatever continuous-tracking
+# mode the user had engaged. We persist the user's last mode/decim choice here and
+# replay it into each fresh agent the instant it reports "ready", so HW-hop (or
+# fast-track) tracking resumes transparently across a respawn — with no browser
+# connected and no client-side round-trip. A new/reconnecting browser is also
+# primed with this state so its UI reflects what the agent is actually doing.
+sticky_mode = None       # latest engaged {"t":"hop"|"fasttrack", "on":True, ...} or None
+sticky_decim = None      # latest {"t":"decim","n":..} or None
+
+
+def modestate_msg():
+    """A synthetic message that tells a browser which continuous mode is live."""
+    m = sticky_mode or {}
+    return {"t": "modestate",
+            "mode": m.get("t") if m.get("on") else None,
+            "bin": m.get("bin"),
+            "decim": (sticky_decim or {}).get("n")}
+
+
+def note_sticky(cmd):
+    """Update sticky mode/decim from a browser command (idempotent)."""
+    global sticky_mode, sticky_decim
+    if not isinstance(cmd, dict):
+        return
+    ct = cmd.get("t")
+    if ct in ("hop", "fasttrack"):
+        sticky_mode = cmd if cmd.get("on") else None   # off clears the mode
+    elif ct == "decim":
+        sticky_decim = cmd
 
 
 def ssh_argv(remote_cmd):
@@ -136,6 +166,7 @@ async def handle_ws(reader, writer, key):
         await ws_send(writer, last_ready)
     if last_status:
         await ws_send(writer, last_status)
+    await ws_send(writer, modestate_msg())   # sync UI to the live tracking mode
     try:
         while True:
             opcode, data = await ws_read_frame(reader)
@@ -146,7 +177,12 @@ async def handle_ws(reader, writer, key):
                 await writer.drain()
                 continue
             if opcode in (0x1, 0x2) and data:
-                # browser -> agent command
+                # browser -> agent command. Remember sticky mode/decim so it can be
+                # replayed into a fresh agent after a respawn.
+                try:
+                    note_sticky(json.loads(data))
+                except Exception:
+                    pass
                 if agent_stdin is not None:
                     try:
                         agent_stdin.write(data + b"\n")
@@ -255,6 +291,18 @@ async def agent_pump():
                 t = obj.get("t")
                 if t == "ready":
                     last_ready = obj
+                    # Re-engage the user's selected tracking mode on this fresh
+                    # agent so a respawn doesn't silently drop it. decim first
+                    # (cheap state), then the mode toggle. Fire-and-forget: if the
+                    # firmware is hop-incapable the agent answers with ftstatus.
+                    for c in (sticky_decim, sticky_mode):
+                        if c is not None:
+                            try:
+                                proc.stdin.write((json.dumps(c) + "\n").encode())
+                                await proc.stdin.drain()
+                            except Exception:
+                                pass
+                    await broadcast(modestate_msg())   # resync UIs post-respawn
                 elif t == "status":
                     last_status = obj
                 await broadcast(obj)
