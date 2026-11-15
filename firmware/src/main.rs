@@ -12,9 +12,6 @@
 #![no_std]
 #![no_main]
 
-use cortex_m_rt::entry;
-use panic_halt as _;
-
 mod datapath;
 mod dsp;
 mod gpio;
@@ -22,6 +19,7 @@ mod i2c;
 mod pac;
 mod protocol;
 mod rcu;
+mod rt;
 mod rtt;
 mod s3km111l;
 mod usart;
@@ -45,7 +43,8 @@ static mut FRAME_BUF: [u8; datapath::BUF_LEN] = [0; datapath::BUF_LEN];
 #[no_mangle]
 static mut DBG_REPORT: [u16; 4] = [0; 4];
 
-#[entry]
+/// Firmware entry. `#![no_main]` means there's no Rust `main` lang item; this is
+/// an ordinary function that `rt::Reset` tail-calls after RAM init.
 fn main() -> ! {
     // Hardware bring-up, in the vendor's order (docs/re/02-bus.md call tree).
     rcu::init_clocks();
@@ -54,7 +53,7 @@ fn main() -> ! {
     usart::init(); // host UART (J2)
 
     // Let the S3KM111L power up after PA9 enable before configuring it (~20 ms).
-    cortex_m::asm::delay(1_440_000);
+    rt::delay(1_440_000);
 
     // Radar control: replay the 80-entry boot register table over I2C.
     let dual = false; // single-SoC board; set true to also drive dev 0x44

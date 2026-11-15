@@ -1,0 +1,7 @@
+# Bazel
+/bazel-*
+/.bazel-disk-cache/
+/.bazel-repo-cache/
+/.bazelisk/
+# Cargo (the firmware still builds standalone with cargo too)
+/target/

@@ -1,0 +1,42 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@firmware//rules:firmware.bzl", "firmware_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# From-source GD32E230 firmware as a standalone bare-metal Rust binary. It's
+# dependency-free: src/rt.rs supplies the Cortex-M23 vector table + reset handler
+# + panic handler + delay, so the crate links against prebuilt `core` alone
+# (#![no_std] #![no_main]). Built only under @firmware's gd32e230 transition
+# (firmware_binary, below); off that board it has no Rust target toolchain, so
+# target_compatible_with gates it out of wildcard builds.
+rust_binary(
+    name = "rd03e_fw",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    # Bare-metal: abort on panic (no unwinder), matching Cargo.toml's profile.
+    rustc_flags = ["-Cpanic=abort"],
+    target_compatible_with = ["@firmware//platforms:gd32e230_board"],
+    deps = [":link_script"],
+)
+
+# Carries the self-contained linker script (vector-table placement + GD32E230
+# 64K-flash/8K-RAM memory map) into the rust_binary link. `-T$(location link.x)`
+# goes to the arm-none-eabi linker driver; the rest of the bare-metal link flags
+# (--specs=nano/nosys, -nostartfiles, --gc-sections, -mcpu=cortex-m23) come from
+# @firmware//toolchains/cc/gd32e230.
+cc_library(
+    name = "link_script",
+    additional_linker_inputs = ["link.x"],
+    linkopts = ["-T$(location link.x)"],
+    target_compatible_with = ["@firmware//platforms:gd32e230_board"],
+)
+
+# Retarget rd03e_fw to the gd32e230 board and objcopy the ELF to a raw flash
+# image (flashes at 0x08000000). The retargeted ELF is in the `elf` output group.
+#   bazel build //:rd03e_fw_bin     -> bazel-bin/rd03e_fw_bin.bin
+firmware_binary(
+    name = "rd03e_fw_bin",
+    binary = ":rd03e_fw",
+    board = "gd32e230",
+    opt_mode = "opt",  # size/perf; the image is tiny vs the 64 KB flash
+)
